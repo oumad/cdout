@@ -1,10 +1,9 @@
-use std::ptr::NonNull;
-
 use windows::{
     core::*,
     Win32::Foundation::*,
     Win32::System::Com::*,
-    Win32::System::Ole::*,
+    Win32::System::Ole::*, // Keep for other OLE types if any, though VARIANT is primary
+    Win32::System::Variant::VARIANT, // Explicit import for VARIANT
     Win32::System::WindowsProgramming::MAX_PATH,
     Win32::UI::Shell::{
         Common::ITEMIDLIST,
@@ -27,7 +26,7 @@ struct ComInitializer;
 impl ComInitializer {
     fn new() -> Result<Self> {
         unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED)?;
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         }
         Ok(ComInitializer)
     }
@@ -119,7 +118,8 @@ fn get_explorer_info() -> Result<Option<ExplorerInfo>> {
                                 if let Some(enum_pidl) = ppenum {
                                     let mut rgelt: [*mut ITEMIDLIST; 1] = [std::ptr::null_mut()];
                                     let mut celtfetched: u32 = 0;
-                                    while unsafe { enum_pidl.Next(&mut rgelt, &mut celtfetched).is_ok() } && celtfetched > 0 {
+                                    // Corrected: Added celt = 1 argument to Next()
+                                    while unsafe { enum_pidl.Next(1, &mut rgelt, &mut celtfetched).is_ok() } && celtfetched > 0 {
                                         let pidl_selected_raw = rgelt[0];
                                         if pidl_selected_raw.is_null() {
                                             // Should not happen if Next reports celtfetched > 0
