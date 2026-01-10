@@ -133,6 +133,9 @@ pub fn get_active_explorer_info() -> Result<ExplorerState> {
             }
         }
         
+        // Sort files using natural sort (handles numbers correctly like Windows Explorer)
+        selected_files.sort_by(|a, b| natord::compare(a, b));
+        
         Ok(ExplorerState { path, selected_files })
     }
 }
