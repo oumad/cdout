@@ -45,6 +45,7 @@ pub struct ChatRequest {
 }
 
 #[derive(Deserialize, Debug)]
+#[allow(dead_code)]
 pub struct ChatResponse {
     pub model: String,
     pub message: Message,
@@ -64,9 +65,13 @@ struct ModelInfo {
 
 // --- Ollama Client ---
 
-pub async fn chat(model: &str, messages: Vec<Message>, tools: Option<Vec<ToolDefinition>>) -> Result<Message, String> {
+pub async fn chat(
+    model: &str,
+    messages: Vec<Message>,
+    tools: Option<Vec<ToolDefinition>>,
+) -> Result<Message, String> {
     let client = reqwest::Client::new();
-    
+
     let request_body = ChatRequest {
         model: model.to_string(),
         messages,
@@ -76,7 +81,8 @@ pub async fn chat(model: &str, messages: Vec<Message>, tools: Option<Vec<ToolDef
 
     // Assuming default Ollama running on localhost:11434
     // Make this configurable if needed
-    let response = client.post("http://localhost:11434/api/chat")
+    let response = client
+        .post("http://localhost:11434/api/chat")
         .json(&request_body)
         .send()
         .await
@@ -88,7 +94,8 @@ pub async fn chat(model: &str, messages: Vec<Message>, tools: Option<Vec<ToolDef
         return Err(format!("Ollama API Error ({}): {}", status, error_text));
     }
 
-    let chat_response: ChatResponse = response.json()
+    let chat_response: ChatResponse = response
+        .json()
         .await
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
@@ -97,18 +104,20 @@ pub async fn chat(model: &str, messages: Vec<Message>, tools: Option<Vec<ToolDef
 
 pub async fn list_models() -> Result<Vec<String>, String> {
     let client = reqwest::Client::new();
-    let response = client.get("http://localhost:11434/api/tags")
+    let response = client
+        .get("http://localhost:11434/api/tags")
         .send()
         .await
         .map_err(|e| format!("Network error connecting to Ollama: {}", e))?;
 
-     let status = response.status();
+    let status = response.status();
     if !status.is_success() {
         let error_text = response.text().await.unwrap_or_default();
         return Err(format!("Ollama API Error ({}): {}", status, error_text));
     }
 
-    let model_list: ModelListResponse = response.json()
+    let model_list: ModelListResponse = response
+        .json()
         .await
         .map_err(|e| format!("Failed to parse models response: {}", e))?;
 

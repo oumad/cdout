@@ -1,8 +1,8 @@
+mod agent;
 mod explorer;
 mod llm;
-mod agent;
 
-use agent::{AgentStepResult, AgentResponse};
+use agent::AgentStepResult;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -22,16 +22,31 @@ async fn get_ollama_models() -> Result<Vec<String>, String> {
 // --- Agent Commands ---
 
 #[tauri::command]
-fn init_agent_conversation(context_path: String, selected_files: Vec<String>, user_prompt: String) -> Vec<llm::Message> {
+fn init_agent_conversation(
+    context_path: String,
+    selected_files: Vec<String>,
+    user_prompt: String,
+) -> Vec<llm::Message> {
     let system_prompt = agent::get_initial_system_prompt(&context_path, &selected_files);
     vec![
-        llm::Message { role: "system".to_string(), content: system_prompt, tool_calls: None },
-        llm::Message { role: "user".to_string(), content: user_prompt, tool_calls: None },
+        llm::Message {
+            role: "system".to_string(),
+            content: system_prompt,
+            tool_calls: None,
+        },
+        llm::Message {
+            role: "user".to_string(),
+            content: user_prompt,
+            tool_calls: None,
+        },
     ]
 }
 
 #[tauri::command]
-async fn run_agent_step(model: String, history: Vec<llm::Message>) -> Result<AgentStepResult, String> {
+async fn run_agent_step(
+    model: String,
+    history: Vec<llm::Message>,
+) -> Result<AgentStepResult, String> {
     agent::run_agent_step(model, history).await
 }
 
@@ -46,8 +61,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            greet, 
-            get_explorer_status, 
+            greet,
+            get_explorer_status,
             get_ollama_models,
             init_agent_conversation,
             run_agent_step,
