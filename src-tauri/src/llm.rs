@@ -66,6 +66,7 @@ struct ModelInfo {
 // --- Ollama Client ---
 
 pub async fn chat(
+    ollama_url: &str,
     model: &str,
     messages: Vec<Message>,
     tools: Option<Vec<ToolDefinition>>,
@@ -79,10 +80,9 @@ pub async fn chat(
         tools,
     };
 
-    // Assuming default Ollama running on localhost:11434
-    // Make this configurable if needed
+    let url = format!("{}/api/chat", ollama_url.trim_end_matches('/'));
     let response = client
-        .post("http://localhost:11434/api/chat")
+        .post(&url)
         .json(&request_body)
         .send()
         .await
@@ -102,10 +102,11 @@ pub async fn chat(
     Ok(chat_response.message)
 }
 
-pub async fn list_models() -> Result<Vec<String>, String> {
+pub async fn list_models(ollama_url: &str) -> Result<Vec<String>, String> {
     let client = reqwest::Client::new();
+    let url = format!("{}/api/tags", ollama_url.trim_end_matches('/'));
     let response = client
-        .get("http://localhost:11434/api/tags")
+        .get(&url)
         .send()
         .await
         .map_err(|e| format!("Network error connecting to Ollama: {}", e))?;

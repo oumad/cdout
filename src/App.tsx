@@ -12,7 +12,10 @@ import {
   Loader2,
   ChevronDown,
   ChevronUp,
-  StopCircle
+  StopCircle,
+  FolderSync,
+  RefreshCw,
+  Settings
 } from "lucide-react";
 import "./App.css";
 
@@ -44,6 +47,10 @@ function App() {
   // Agent State
   const [modelName, setModelName] = useState("");
   const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null); // null = checking, false = disconnected, true = connected
+  const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [tempOllamaUrl, setTempOllamaUrl] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("");
 
   // Conversation State
@@ -61,15 +68,53 @@ function App() {
   const [expandedResponses, setExpandedResponses] = useState<Record<number, boolean>>({});
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // Context Sync Tracking
+  const lastSyncedContext = useRef<{ path: string; files: string[] } | null>(null);
+  const [syncPending, setSyncPending] = useState(false);
+  const [showSyncTooltip, setShowSyncTooltip] = useState(false);
+
+  // Fetch saved Ollama URL on mount
   useEffect(() => {
-    invoke<string[]>("get_ollama_models")
-      .then((models) => {
-        setAvailableModels(models);
-        if (models.length > 0) setModelName(models[0]);
-        else setModelName("qwen2.5-coder:latest");
-      })
-      .catch((err) => console.error("Failed to fetch models:", err));
+    const loadUrl = async () => {
+      try {
+        const url = await invoke<string>("get_ollama_url");
+        setOllamaUrl(url);
+        setTempOllamaUrl(url);
+      } catch (err) {
+        console.error("Failed to load Ollama URL:", err);
+      }
+    };
+    loadUrl();
   }, []);
+
+  // Fetch models from Ollama
+  const fetchOllamaModels = async () => {
+    try {
+      const models = await invoke<string[]>("get_ollama_models");
+      setAvailableModels(models);
+      setOllamaConnected(true);
+      if (models.length > 0 && !modelName) {
+        setModelName(models[0]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch models:", err);
+      setOllamaConnected(false);
+      setAvailableModels([]);
+    }
+  };
+
+  // Initial fetch and periodic polling when not connected or no models
+  useEffect(() => {
+    fetchOllamaModels();
+  }, [ollamaUrl]);
+
+  useEffect(() => {
+    // Poll every 5 seconds if Ollama is not connected or has no models
+    if (ollamaConnected === false || (ollamaConnected === true && availableModels.length === 0)) {
+      const interval = setInterval(fetchOllamaModels, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [ollamaConnected, availableModels.length]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -79,9 +124,25 @@ function App() {
   async function getExplorerStatus() {
     setLoading(true);
     try {
+      // Debug: log all explorer windows/tabs to console
+      const debugInfo = await invoke<any>("get_explorer_debug");
+      console.log("Explorer Debug Info:", debugInfo);
+
       const state = await invoke<ExplorerState>("get_explorer_status");
       setExplorerState(state);
       setError("");
+
+      // If we already have a conversation, mark that context needs to be updated
+      if (chatHistory.length > 0) {
+        const currentFiles = lastSyncedContext.current?.files || [];
+        const filesChanged =
+          state.selected_files.length !== currentFiles.length ||
+          state.selected_files.some((f, i) => f !== currentFiles[i]);
+
+        if (filesChanged) {
+          setSyncPending(true);
+        }
+      }
     } catch (e) {
       setError(String(e));
       setExplorerState(null);
@@ -103,15 +164,54 @@ function App() {
       let history = chatHistory;
 
       if (history.length === 0) {
+        // First message - initialize with full context
         history = await invoke<Message[]>("init_agent_conversation", {
           contextPath: explorerState.path,
           selectedFiles: explorerState.selected_files,
           userPrompt: promptToSend
         });
+        // Track the synced context
+        lastSyncedContext.current = {
+          path: explorerState.path,
+          files: [...explorerState.selected_files]
+        };
+        setSyncPending(false);
         setChatHistory(history);
         await runAgentStep(history);
       } else {
-        const newHistory = [...history, { role: "user", content: promptToSend }];
+        // Follow-up message
+        let newHistory = [...history];
+
+        // If sync is pending, inject context update before user message
+        if (syncPending && explorerState) {
+          let contextUpdate: string;
+
+          // For large file lists (>20), use file-based mode
+          const FILE_LIST_THRESHOLD = 20;
+          if (explorerState.selected_files.length > FILE_LIST_THRESHOLD) {
+            // Write file list to temp file
+            const fileListPath = await invoke<string>("write_file_list", {
+              files: explorerState.selected_files
+            });
+            contextUpdate = `[CONTEXT UPDATE - Files have changed]\n\nWorking directory: ${explorerState.path}\nSelected files: ${explorerState.selected_files.length} files (too many to list inline)\n\nThe complete file list has been written to: ${fileListPath}\n\nTo read the file list in PowerShell, use:\n$files = Get-Content '${fileListPath}'\n\nPlease use these updated files for any subsequent operations.`;
+          } else {
+            const filesList = explorerState.selected_files.length > 0
+              ? explorerState.selected_files.map((f, i) => `${i + 1}. ${f}`).join('\n')
+              : 'No specific files selected';
+            contextUpdate = `[CONTEXT UPDATE - Files have changed]\n\nWorking directory: ${explorerState.path}\nSelected files (${explorerState.selected_files.length} total):\n${filesList}\n\nPlease use these updated files for any subsequent operations.`;
+          }
+
+          newHistory.push({ role: "user", content: contextUpdate });
+
+          // Track the new synced context
+          lastSyncedContext.current = {
+            path: explorerState.path,
+            files: [...explorerState.selected_files]
+          };
+          setSyncPending(false);
+        }
+
+        newHistory.push({ role: "user", content: promptToSend });
         setChatHistory(newHistory);
         await runAgentStep(newHistory);
       }
@@ -233,6 +333,58 @@ function App() {
           <Terminal size={20} />
         </div>
 
+        {/* Floating Sync Badge */}
+        <div
+          className="flex-none relative no-drag"
+          onMouseEnter={() => setShowSyncTooltip(true)}
+          onMouseLeave={() => setShowSyncTooltip(false)}
+        >
+          <button
+            onClick={getExplorerStatus}
+            disabled={loading || isProcessing || isExecuting}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-50 ${syncPending
+              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'
+              : explorerState
+                ? 'bg-gray-800/80 text-gray-300 hover:bg-gray-700 border border-gray-700'
+                : 'bg-indigo-600 text-white hover:bg-indigo-500'
+              }`}
+            title={explorerState ? "Click to sync with Explorer" : "Sync with Explorer"}
+          >
+            {loading ? (
+              <RefreshCw size={14} className="animate-spin" />
+            ) : (
+              <FolderSync size={14} />
+            )}
+            {explorerState ? (
+              <span className="tabular-nums">
+                {explorerState.selected_files.length}
+              </span>
+            ) : (
+              <span>Sync</span>
+            )}
+          </button>
+
+          {/* Tooltip showing file list on hover */}
+          {showSyncTooltip && explorerState && explorerState.selected_files.length > 0 && (
+            <div className="absolute top-full left-0 mt-2 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-3 min-w-64 max-w-sm animate-in fade-in slide-in-from-top-2 duration-150">
+              <div className="text-[10px] text-gray-500 uppercase font-bold tracking-wider mb-2">Selected Files</div>
+              <ul className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
+                {explorerState.selected_files.map((file, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs text-gray-400">
+                    <File size={10} className="mt-0.5 shrink-0 text-gray-600" />
+                    <span className="break-all">{file.split('\\').pop()}</span>
+                  </li>
+                ))}
+              </ul>
+              {syncPending && (
+                <div className="mt-2 pt-2 border-t border-gray-800 text-[10px] text-amber-400">
+                  ⚡ Context will update with next message
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Main Input Field (Command Palette Style) */}
         <div className="flex-1 relative group no-drag">
           <input
@@ -282,13 +434,84 @@ function App() {
 
           {/* Model Selector */}
           <select
-            className="bg-gray-950 border border-gray-700 text-gray-400 text-[10px] rounded p-1 focus:ring-1 focus:ring-indigo-500 focus:outline-none w-24"
+            className={`bg-gray-950 border text-[10px] rounded p-1 focus:ring-1 focus:ring-indigo-500 focus:outline-none w-24 ${ollamaConnected === false ? 'border-red-500/50 text-red-400' :
+              availableModels.length === 0 ? 'border-amber-500/50 text-amber-400' :
+                'border-gray-700 text-gray-400'
+              }`}
             value={modelName}
             onChange={(e) => setModelName(e.target.value)}
-            disabled={isProcessing || isExecuting}
+            disabled={isProcessing || isExecuting || availableModels.length === 0}
           >
-            {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+            {ollamaConnected === null ? (
+              <option value="">Checking...</option>
+            ) : ollamaConnected === false ? (
+              <option value="">No Ollama</option>
+            ) : availableModels.length === 0 ? (
+              <option value="">No models</option>
+            ) : (
+              availableModels.map(m => <option key={m} value={m}>{m}</option>)
+            )}
           </select>
+
+          {/* Settings Button */}
+          <div className="relative">
+            <button
+              onClick={() => {
+                setTempOllamaUrl(ollamaUrl);
+                setIsSettingsOpen(!isSettingsOpen);
+              }}
+              className={`p-2 rounded-md transition ${isSettingsOpen ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'}`}
+              title="Settings"
+            >
+              <Settings size={18} />
+            </button>
+
+            {/* Settings Popover */}
+            {isSettingsOpen && (
+              <div className="absolute top-full right-0 mt-2 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-4 min-w-72 animate-in fade-in slide-in-from-top-2 duration-150">
+                <div className="text-[10px] text-gray-500 uppercase font-bold tracking-wider mb-3">Settings</div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Ollama Server URL</label>
+                    <input
+                      type="text"
+                      value={tempOllamaUrl}
+                      onChange={(e) => setTempOllamaUrl(e.target.value)}
+                      className="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500"
+                      placeholder="http://localhost:11434"
+                    />
+                  </div>
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={async () => {
+                        try {
+                          await invoke("set_ollama_url", { url: tempOllamaUrl });
+                          setOllamaUrl(tempOllamaUrl);
+                          setOllamaConnected(null);
+                          setIsSettingsOpen(false);
+                          // Always fetch models after saving, even if URL unchanged
+                          fetchOllamaModels();
+                        } catch (err) {
+                          console.error("Failed to save URL:", err);
+                        }
+                      }}
+                      className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-medium transition"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => setIsSettingsOpen(false)}
+                      className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 rounded text-xs font-medium transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -479,7 +702,7 @@ function App() {
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={approveCommand}
-                    disabled={isProcessing || isExecuting}
+                    disabled={isProcessing || isExecuting || isFeedbackOpen}
                     className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-medium transition flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
                     {isExecuting ? <Loader2 className="animate-spin" size={12} /> : <Play size={12} />}
@@ -490,7 +713,7 @@ function App() {
                       setAutoExecute(true);
                       approveCommand();
                     }}
-                    disabled={isProcessing || isExecuting}
+                    disabled={isProcessing || isExecuting || isFeedbackOpen}
                     className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-medium transition flex items-center justify-center gap-1.5 disabled:opacity-50"
                     title="Execute this and all following commands automatically"
                   >
