@@ -58,30 +58,41 @@ pub fn get_initial_system_prompt(context_path: &str, selected_files: &Vec<String
     };
 
     format!(
-        "You are an intelligent PowerShell automation assistant.
+        "You are a PowerShell automation assistant. You have ONE tool: run_powershell.
 
 CONTEXT:
 - Working directory: '{}'
 - Selected files ({} total):
 {}
 
-WORKFLOW - Follow these steps IN ORDER:
+CRITICAL RULES - READ CAREFULLY:
 
-STEP 1 - PLAN (text only, no tool call):
-Before executing anything, briefly state:
-- What transformation/operation you'll perform
-- How you'll handle all {} files (loop strategy)
-- Output naming convention
+1. YOU MUST CALL THE run_powershell TOOL. Do NOT just write code in your response text.
+   - WRONG: Writing a code block in your message
+   - CORRECT: Calling the run_powershell function with the command
 
-STEP 2 - EXECUTE (call run_powershell tool):
-Write a COMPLETE PowerShell script that processes ALL files in ONE execution.
-Use foreach loops for batch operations. Example structure:
+2. Use ONLY PowerShell. Never suggest Python, batch files, or other languages.
 
-```powershell
-$files = @(
-    'file1.mp4',
-    'file2.mp4'
-)
+3. After briefly stating your plan (1-2 sentences max), IMMEDIATELY call run_powershell.
+
+4. Process ALL {} files in ONE script using a foreach loop.
+
+5. WHEN ERRORS OCCUR - NEVER STOP:
+   - If a command fails, briefly note the issue (1 sentence) then IMMEDIATELY call run_powershell with a FIXED version
+   - Do NOT just explain the problem and stop
+   - Do NOT ask for permission to fix - just fix it
+   - Keep trying until the task succeeds or you've exhausted options
+   - Example: \"The script failed because X. Fixing now.\" [IMMEDIATELY call run_powershell with corrected script]
+
+EXAMPLE WORKFLOW:
+
+User: \"reverse these videos\"
+You: \"I'll reverse the video while keeping audio intact using ffmpeg.\"
+[IMMEDIATELY call run_powershell with the script - do NOT write code as text]
+
+SCRIPT TEMPLATE:
+```
+$files = @('full_path_1', 'full_path_2')
 foreach ($file in $files) {{
     $output = $file -replace '\\.mp4$', '_processed.mp4'
     ffmpeg -i $file <filters> $output
@@ -89,31 +100,20 @@ foreach ($file in $files) {{
 }}
 ```
 
-SCRIPT REQUIREMENTS:
-- Process ALL {} files in a single script using foreach
-- Include the full file paths in a $files array
-- Use proper output naming to avoid overwrites
-- Add success checks with Test-Path and Write-Host
-- Quote paths with spaces properly
-
-STEP 3 - VERIFY & REPORT:
-After execution, provide a brief summary of what was processed.
-
-FFMPEG NOTES:
-- STDERR output is normal - look for 'video:...kB' to confirm success
-- Common filters: hflip, vflip, scale, hue, hstack, vstack
-
-IMPORTANT:
-- Do NOT process files one-by-one with separate tool calls
-- Write ONE comprehensive script that handles everything
-- If the script fails, diagnose and provide a corrected version",
-        context_path, file_count, files_list, file_count, file_count
+REMEMBER: 
+- Call the tool, don't just show code
+- PowerShell only, no Python
+- Brief plan then IMMEDIATE tool call
+- If you encounter an error, FIX IT immediately - don't just explain and stop
+- If you find yourself writing ```powershell in your response, STOP - you should be calling the tool instead",
+        context_path, file_count, files_list, file_count
     )
 }
 
 // --- Agent Logic ---
 
 pub async fn run_agent_step(
+    ollama_url: String,
     model: String,
     mut history: Vec<Message>,
 ) -> Result<AgentStepResult, String> {
@@ -136,9 +136,7 @@ pub async fn run_agent_step(
         },
     }];
 
-    // 2. Call LLM with current history
-    // We assume history already contains System Prompt + User Prompt (handled by frontend or init wrapper)
-    let response_msg = chat(&model, history.clone(), Some(tools.clone())).await?;
+    let response_msg = chat(&ollama_url, &model, history.clone(), Some(tools.clone())).await?;
     history.push(response_msg.clone());
 
     // 3. Check for Tool Calls
@@ -188,6 +186,54 @@ pub async fn run_agent_step(
                     });
                 }
             }
+        }
+    }
+
+    // 5. Auto-nudge: If the LLM said it WILL do something but didn't call the tool, retry with a nudge
+    // Detect phrases that indicate intent without action
+    let intent_phrases = [
+        "i'll",
+        "i will",
+        "let me",
+        "i'm going to",
+        "i am going to",
+        "which reduces",
+        "which will",
+        "this will",
+        "to remove",
+        "to crop",
+        "to process",
+        "to convert",
+        "here's",
+        "here is",
+        "the command",
+    ];
+    let has_intent = intent_phrases.iter().any(|p| content_lower.contains(p));
+
+    // Also detect short responses that just describe the plan
+    let is_short_explanation = response_msg.content.len() < 500 && !content_lower.contains("```");
+
+    let not_complete =
+        !is_success_summary && !content_lower.contains("error") && !content_lower.contains("fail");
+
+    if (has_intent || is_short_explanation) && not_complete {
+        // The LLM described what it will do but didn't actually call the tool
+        // Add a nudge message and recursively retry (up to 2 times to avoid infinite loops)
+        let nudge_count = history
+            .iter()
+            .filter(|m| m.content.contains("EXECUTE NOW"))
+            .count();
+        if nudge_count < 2 {
+            history.push(Message {
+                role: "user".to_string(),
+                content:
+                    "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW."
+                        .to_string(),
+                tool_calls: None,
+            });
+
+            // Recursive call with the nudge
+            return Box::pin(run_agent_step(ollama_url, model, history)).await;
         }
     }
 
