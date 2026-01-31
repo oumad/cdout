@@ -225,7 +225,7 @@ pub async fn run_agent_step(
             .count();
         if nudge_count < 2 {
             history.push(Message {
-                role: "user".to_string(),
+                role: "system".to_string(),
                 content:
                     "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW."
                         .to_string(),
