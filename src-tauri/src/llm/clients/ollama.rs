@@ -1,39 +1,5 @@
+use crate::llm::{Message, ToolDefinition};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-// --- Structs for Ollama Chat API ---
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCall>>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ToolCall {
-    pub function: FunctionCall,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct FunctionCall {
-    pub name: String,
-    pub arguments: Value, // Arguments are JSON object
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ToolDefinition {
-    pub r#type: String, // usually "function"
-    pub function: ToolFunction,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ToolFunction {
-    pub name: String,
-    pub description: String,
-    pub parameters: Value, // JSON schema for parameters
-}
 
 #[derive(Serialize, Debug)]
 pub struct ChatRequest {
@@ -52,7 +18,6 @@ pub struct ChatResponse {
     pub done: bool,
 }
 
-// --- Structs for Model Listing ---
 #[derive(Deserialize, Debug)]
 struct ModelListResponse {
     models: Vec<ModelInfo>,
@@ -62,8 +27,6 @@ struct ModelListResponse {
 struct ModelInfo {
     name: String,
 }
-
-// --- Ollama Client ---
 
 pub async fn chat(
     ollama_url: &str,

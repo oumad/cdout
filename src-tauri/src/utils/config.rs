@@ -63,3 +63,52 @@ pub fn set_ollama_url(url: String) -> Result<(), String> {
     config.ollama_url = url;
     save_config(&config)
 }
+
+// --- API Keys Management ---
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ApiKeys {
+    pub openai: Option<String>,
+    pub gemini: Option<String>,
+}
+
+fn get_api_keys_path() -> PathBuf {
+    let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    path.push("shuttle-io");
+    std::fs::create_dir_all(&path).ok();
+    path.push("api_keys.json");
+    path
+}
+
+pub fn save_api_keys(keys: &ApiKeys) -> Result<(), String> {
+    let path = get_api_keys_path();
+    let json = serde_json::to_string_pretty(keys).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())
+}
+
+pub fn load_api_keys() -> ApiKeys {
+    let path = get_api_keys_path();
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or(ApiKeys {
+            openai: None,
+            gemini: None,
+        })
+    } else {
+        ApiKeys {
+            openai: None,
+            gemini: None,
+        }
+    }
+}
+
+pub fn set_openai_key(key: String) -> Result<(), String> {
+    let mut keys = load_api_keys();
+    keys.openai = Some(key);
+    save_api_keys(&keys)
+}
+
+pub fn set_gemini_key(key: String) -> Result<(), String> {
+    let mut keys = load_api_keys();
+    keys.gemini = Some(key);
+    save_api_keys(&keys)
+}
