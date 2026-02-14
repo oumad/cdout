@@ -52,6 +52,25 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [tempOllamaUrl, setTempOllamaUrl] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("");
+  const [antigravityEmail, setAntigravityEmail] = useState<string | null>(null);
+
+  // New Provider State
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [geminiKey, setGeminiKey] = useState("");
+  // const [apiKeysLoaded, setApiKeysLoaded] = useState(false);
+
+  // useEffect(() => {
+  //   invoke<string | null>("get_antigravity_status").then(setAntigravityEmail).catch(console.error);
+  // }, []);
+
+  // const handleAntigravityLogin = async () => {
+  //   try {
+  //     const email = await invoke<string>("login_antigravity");
+  //     setAntigravityEmail(email);
+  //   } catch (e) {
+  //     setError("Login Failed: " + String(e));
+  //   }
+  // };
 
   // Conversation State
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
@@ -85,6 +104,11 @@ function App() {
       }
     };
     loadUrl();
+    invoke<string | null>("get_antigravity_status").then(setAntigravityEmail).catch(console.error);
+    invoke<{ openai: string | null; gemini: string | null }>("get_api_keys").then(keys => {
+      setOpenaiKey(keys.openai || "");
+      setGeminiKey(keys.gemini || "");
+    }).catch(console.error);
   }, []);
 
   // Fetch models from Ollama
@@ -268,6 +292,33 @@ function App() {
         }
       } else {
         setPendingCommand(null);
+
+        // Auto-Continue Logic
+        if (shouldAutoExecute) {
+          const contentLower = result.response.content.toLowerCase();
+          // Simple heuristic: if it says "done", "complete", "finished", or "success", we stop.
+          // Otherwise, we assume it's an intermediate step or explanation and nudge it to continue.
+          const isTaskDone =
+            contentLower.includes("task complete") ||
+            contentLower.includes("all done") ||
+            contentLower.includes("successfully processed all") ||
+            (contentLower.includes("finished") && contentLower.length < 100);
+
+          if (!isTaskDone) {
+            // It's just talking, but we want it to keep working if there's more to do.
+            // We inject a hidden "proceed" message to keep the loop alive.
+            // Wait a small delay to avoid UI jitter
+            setTimeout(async () => {
+              if (stopRequested.current) return;
+              const newHistory = [...result.updated_history, { role: "user", content: "If there are more steps, proceed. Otherwise say 'Task Complete'." }];
+              setChatHistory(newHistory);
+              setIsProcessing(true);
+              await runAgentStep(newHistory, true);
+            }, 500);
+            return;
+          }
+        }
+
         setAutoExecute(false); // Reset auto-execute when done
       }
     } catch (e) {
@@ -287,7 +338,7 @@ function App() {
   }
 
   // Step 3: Approve Command
-  async function approveCommand() {
+  async function approveCommand(continueAuto = false) {
     if (!pendingCommand) return;
 
     setIsExecuting(true);
@@ -309,7 +360,7 @@ function App() {
 
       // Continue Loop
       setIsProcessing(true);
-      await runAgentStep(newHistory);
+      await runAgentStep(newHistory, continueAuto || autoExecute);
 
     } catch (e) {
       console.error(`Command Execution Failed: ${e}`);
@@ -321,6 +372,27 @@ function App() {
   function toggleExpand(idx: number) {
     setExpandedResponses(prev => ({ ...prev, [idx]: !prev[idx] }));
   }
+
+  const handleAntigravityLogin = async () => {
+    try {
+      const email = await invoke<string>("login_antigravity");
+      setAntigravityEmail(email);
+    } catch (e) {
+      setError("Login Failed: " + String(e));
+    }
+  };
+
+
+  const saveApiKeys = async () => {
+    try {
+      await invoke("set_openai_key", { key: openaiKey });
+      await invoke("set_gemini_key", { key: geminiKey });
+      setIsSettingsOpen(false);
+      fetchOllamaModels(); // Refresh list
+    } catch (e) {
+      setError("Failed to save keys: " + String(e));
+    }
+  };
 
   return (
     <main className="flex flex-col h-screen bg-gray-950 text-gray-100 font-sans overflow-hidden">
@@ -483,16 +555,58 @@ function App() {
                     />
                   </div>
 
-                  <div className="flex gap-2 pt-1">
+                  <div className="pt-2 border-t border-gray-800">
+                    <label className="block text-xs text-gray-400 mb-1">Antigravity Access</label>
+                    {antigravityEmail ? (
+                      <div className="flex items-center justify-between bg-emerald-900/20 border border-emerald-500/30 rounded px-2 py-1.5">
+                        <span className="text-xs text-emerald-400 truncate max-w-[180px]" title={antigravityEmail}>{antigravityEmail}</span>
+                        <Bot size={12} className="text-emerald-500" />
+                      </div>
+                    ) : (
+                      <button
+                        onClick={handleAntigravityLogin}
+                        className="w-full py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-600 rounded text-xs transition flex items-center justify-center gap-2"
+                      >
+                        <Bot size={12} />
+                        Login with Google
+                      </button>
+                    )}
+                  </div>
+
+
+                  <div className="pt-2 border-t border-gray-800 space-y-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">OpenAI API Key</label>
+                      <input
+                        type="password"
+                        value={openaiKey}
+                        onChange={(e) => setOpenaiKey(e.target.value)}
+                        className="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500"
+                        placeholder="sk-..."
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Gemini API Key</label>
+                      <input
+                        type="password"
+                        value={geminiKey}
+                        onChange={(e) => setGeminiKey(e.target.value)}
+                        className="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500"
+                        placeholder="AIza..."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 pt-1 border-t border-gray-800 mt-2">
                     <button
                       onClick={async () => {
                         try {
                           await invoke("set_ollama_url", { url: tempOllamaUrl });
                           setOllamaUrl(tempOllamaUrl);
+                          await saveApiKeys();
                           setOllamaConnected(null);
-                          setIsSettingsOpen(false);
-                          // Always fetch models after saving, even if URL unchanged
-                          fetchOllamaModels();
+                          // setIsSettingsOpen(false); // saveApiKeys handles this
+                          // fetchOllamaModels(); // saveApiKeys handles this
                         } catch (err) {
                           console.error("Failed to save URL:", err);
                         }
@@ -701,7 +815,7 @@ function App() {
                 />
                 <div className="flex gap-2 mt-3">
                   <button
-                    onClick={approveCommand}
+                    onClick={() => approveCommand(false)}
                     disabled={isProcessing || isExecuting || isFeedbackOpen}
                     className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-medium transition flex items-center justify-center gap-1.5 disabled:opacity-50"
                   >
@@ -711,7 +825,7 @@ function App() {
                   <button
                     onClick={() => {
                       setAutoExecute(true);
-                      approveCommand();
+                      approveCommand(true);
                     }}
                     disabled={isProcessing || isExecuting || isFeedbackOpen}
                     className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-medium transition flex items-center justify-center gap-1.5 disabled:opacity-50"

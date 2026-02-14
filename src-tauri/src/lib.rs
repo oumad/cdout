@@ -1,9 +1,17 @@
-mod agent;
-mod config;
-mod explorer;
+mod auth;
+mod features;
 mod llm;
+mod utils;
 
-use agent::AgentStepResult;
+use auth::antigravity;
+use features::agent;
+use features::explorer;
+use llm::clients::ollama;
+use llm::Message;
+use utils::config;
+
+// use agent::run_agent_step as run_agent_step_impl;
+use features::agent::AgentStepResult;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -23,7 +31,22 @@ fn get_explorer_debug() -> Result<explorer::ExplorerDebugInfo, String> {
 #[tauri::command]
 async fn get_ollama_models() -> Result<Vec<String>, String> {
     let url = config::get_ollama_url();
-    llm::list_models(&url).await
+    let mut models = ollama::list_models(&url).await.unwrap_or_default();
+
+    if antigravity::load_credentials().is_some() {
+        models.push("antigravity (gemini-3-flash)".to_string());
+    }
+
+    // Add OpenAI/Gemini generic
+    let api_keys = config::load_api_keys();
+    if api_keys.openai.is_some() && !api_keys.openai.as_ref().unwrap().is_empty() {
+        models.push("openai:gpt-4o".to_string());
+    }
+    if api_keys.gemini.is_some() && !api_keys.gemini.as_ref().unwrap().is_empty() {
+        models.push("gemini:gemini-1.5-pro".to_string());
+    }
+
+    Ok(models)
 }
 
 #[tauri::command]
@@ -36,6 +59,34 @@ fn set_ollama_url(url: String) -> Result<(), String> {
     config::set_ollama_url(url)
 }
 
+#[tauri::command]
+async fn login_antigravity() -> Result<String, String> {
+    antigravity::perform_login()
+        .await
+        .map(|c| c.email.unwrap_or_else(|| "Logged in".to_string()))
+}
+
+#[tauri::command]
+async fn get_antigravity_status() -> Option<String> {
+    let creds = antigravity::load_credentials();
+    creds.and_then(|c| c.email)
+}
+
+#[tauri::command]
+async fn set_openai_key(key: String) -> Result<(), String> {
+    config::set_openai_key(key)
+}
+
+#[tauri::command]
+async fn set_gemini_key(key: String) -> Result<(), String> {
+    config::set_gemini_key(key)
+}
+
+#[tauri::command]
+async fn get_api_keys() -> config::ApiKeys {
+    config::load_api_keys()
+}
+
 // --- Agent Commands ---
 
 #[tauri::command]
@@ -43,15 +94,15 @@ fn init_agent_conversation(
     context_path: String,
     selected_files: Vec<String>,
     user_prompt: String,
-) -> Vec<llm::Message> {
+) -> Vec<Message> {
     let system_prompt = agent::get_initial_system_prompt(&context_path, &selected_files);
     vec![
-        llm::Message {
+        Message {
             role: "system".to_string(),
             content: system_prompt,
             tool_calls: None,
         },
-        llm::Message {
+        Message {
             role: "user".to_string(),
             content: user_prompt,
             tool_calls: None,
@@ -60,10 +111,7 @@ fn init_agent_conversation(
 }
 
 #[tauri::command]
-async fn run_agent_step(
-    model: String,
-    history: Vec<llm::Message>,
-) -> Result<AgentStepResult, String> {
+async fn run_agent_step(model: String, history: Vec<Message>) -> Result<AgentStepResult, String> {
     let url = config::get_ollama_url();
     agent::run_agent_step(url, model, history).await
 }
@@ -97,6 +145,11 @@ pub fn run() {
             get_ollama_models,
             get_ollama_url,
             set_ollama_url,
+            login_antigravity,
+            get_antigravity_status,
+            set_openai_key,
+            set_gemini_key,
+            get_api_keys,
             init_agent_conversation,
             run_agent_step,
             execute_powershell,
