@@ -79,6 +79,7 @@ function App() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [autoExecute, setAutoExecute] = useState(false);
   const stopRequested = useRef(false);
+  const autoStepCount = useRef(0);
 
   // UI State
   const [isContextOpen, setIsContextOpen] = useState(false);
@@ -182,6 +183,7 @@ function App() {
     const promptToSend = agentPrompt;
     setAgentPrompt(""); // Clear input immediately
     setIsProcessing(true);
+    autoStepCount.current = 0; // Reset auto-continue counter on new user message
     setPendingCommand(null);
 
     try {
@@ -266,6 +268,7 @@ function App() {
 
       if (result.response.type === "CommandProposal") {
         const cmd = result.response.content;
+        autoStepCount.current = 0; // Reset counter — work is progressing
         if (shouldAutoExecute) {
           // Auto-execute without asking
           setIsExecuting(true);
@@ -296,21 +299,25 @@ function App() {
         // Auto-Continue Logic
         if (shouldAutoExecute) {
           const contentLower = result.response.content.toLowerCase();
-          // Simple heuristic: if it says "done", "complete", "finished", or "success", we stop.
-          // Otherwise, we assume it's an intermediate step or explanation and nudge it to continue.
           const isTaskDone =
             contentLower.includes("task complete") ||
             contentLower.includes("all done") ||
             contentLower.includes("successfully processed all") ||
-            (contentLower.includes("finished") && contentLower.length < 100);
+            contentLower.includes("completed successfully") ||
+            contentLower.includes("successfully") ||
+            contentLower.includes("has been") ||
+            contentLower.includes("have been") ||
+            contentLower.includes("done") ||
+            (contentLower.includes("complete") && contentLower.length < 200) ||
+            (contentLower.includes("finished") && contentLower.length < 200);
 
-          if (!isTaskDone) {
-            // It's just talking, but we want it to keep working if there's more to do.
-            // We inject a hidden "proceed" message to keep the loop alive.
-            // Wait a small delay to avoid UI jitter
+          // Safety: cap auto-continue iterations to prevent infinite loops
+          const MAX_AUTO_STEPS = 10;
+          if (!isTaskDone && autoStepCount.current < MAX_AUTO_STEPS) {
+            autoStepCount.current++;
             setTimeout(async () => {
               if (stopRequested.current) return;
-              const newHistory = [...result.updated_history, { role: "user", content: "If there are more steps, proceed. Otherwise say 'Task Complete'." }];
+              const newHistory = [...result.updated_history, { role: "user", content: "If there are remaining UNFINISHED steps, proceed to the next one. If all steps are already done, say 'Task Complete'. Do NOT repeat any step that has already been executed." }];
               setChatHistory(newHistory);
               setIsProcessing(true);
               await runAgentStep(newHistory, true);
