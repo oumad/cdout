@@ -2,6 +2,9 @@ use crate::llm::clients::ollama::chat;
 use crate::llm::{Message, ToolDefinition, ToolFunction};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::env;
+use std::fs::File;
+use std::io::Write;
 use std::process::Command;
 
 // --- Types ---
@@ -65,26 +68,60 @@ pub fn run_powershell_command(command: &str, cwd: Option<&str>) -> String {
     }
 }
 
-pub fn get_initial_system_prompt(context_path: &str, selected_files: &Vec<String>) -> String {
+pub fn get_initial_system_prompt(
+    context_path: &str,
+    selected_files: &Vec<String>,
+) -> Result<String, String> {
     let file_count = selected_files.len();
-    let files_list = if selected_files.is_empty() {
-        "No specific files selected (operating on directory)".to_string()
+    const MAX_FILES_TO_LIST: usize = 20;
+
+    let (files_section, rules_section, script_template) = if selected_files.is_empty() {
+        (
+            "Selected files: None (operating on directory)".to_string(),
+            "4. Process all relevant files in the directory.".to_string(),
+            "$files = Get-ChildItem -Path . -Filter *.mp4\nforeach ($file in $files) { ... }"
+                .to_string(),
+        )
+    } else if file_count > MAX_FILES_TO_LIST {
+        // Create temp file
+        let temp_path = env::temp_dir().join("shuttle_agent_context_files.txt");
+        let mut file =
+            File::create(&temp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+        for f in selected_files {
+            writeln!(file, "{}", f).map_err(|e| format!("Failed to write to temp file: {}", e))?;
+        }
+        let temp_path_str = temp_path.to_string_lossy().replace("\\", "/");
+
+        (
+            format!("Selected files ({} total):\n[LIST TRUNCATED]\nThe full list of files has been written to: '{}'", file_count, temp_path_str),
+            format!("4. READ THE FILE LIST:\n   - The user selected {} files, which is too many to list here.\n   - Access the list using: $files = Get-Content '{}'\n   - Do NOT try to guess the files. READ THE TEXT FILE.", file_count, temp_path_str),
+            format!("$files = Get-Content '{}'\nforeach ($file in $files) {{ ... }}", temp_path_str)
+        )
     } else {
-        selected_files
+        let list = selected_files
             .iter()
             .enumerate()
             .map(|(i, f)| format!("{}. {}", i + 1, f))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+
+        (
+            format!("Selected files ({} total):\n{}", file_count, list),
+            format!(
+                "4. Process ALL {} files in ONE script using a foreach loop.",
+                file_count
+            ),
+            "$files = @('path1', 'path2')\nforeach ($file in $files) { ... }".to_string(),
+        )
     };
 
-    format!(
+    Ok(format!(
         "You are a PowerShell automation assistant. You have ONE tool: run_powershell.
 
 CONTEXT:
 - Working directory: '{}'
-- Selected files ({} total):
-{}
+- {}
 
 CRITICAL RULES - READ CAREFULLY:
 
@@ -96,7 +133,7 @@ CRITICAL RULES - READ CAREFULLY:
 
 3. After briefly stating your plan (1-2 sentences max), IMMEDIATELY call run_powershell.
 
-4. Process ALL {} files in ONE script using a foreach loop.
+{}
 
 5. When the ENTIRE task is finished, you MUST say \"Task Complete\".
 
@@ -105,7 +142,6 @@ CRITICAL RULES - READ CAREFULLY:
    - Do NOT just explain the problem and stop
    - Do NOT ask for permission to fix - just fix it
    - Keep trying until the task succeeds or you've exhausted options
-   - Example: \"The script failed because X. Fixing now.\" [IMMEDIATELY call run_powershell with corrected script]
 
 7. SAFETY - DATA PROTECTION:
    - Do NOT delete original files unless the user EXPLICITLY asks to \"delete\", \"remove\", or \"replace\" them.
@@ -116,26 +152,19 @@ EXAMPLE WORKFLOW:
 
 User: \"reverse these videos\"
 You: \"I'll reverse the video while keeping audio intact using ffmpeg.\"
-[IMMEDIATELY call run_powershell with the script - do NOT write code as text]
+[IMMEDIATELY call run_powershell with the script]
 
 SCRIPT TEMPLATE:
 ```
-$files = @('full_path_1', 'full_path_2')
-foreach ($file in $files) {{
-    $output = $file -replace '\\.mp4$', '_processed.mp4'
-    ffmpeg -i $file <filters> $output
-    if (Test-Path $output) {{ Write-Host \"SUCCESS: $output\" }}
-}}
+{}
 ```
 
 REMEMBER: 
 - Call the tool, don't just show code
 - PowerShell only, no Python
-- Brief plan then IMMEDIATE tool call
-- If you encounter an error, FIX IT immediately - don't just explain and stop
-- If you find yourself writing ```powershell in your response, STOP - you should be calling the tool instead",
-        context_path, file_count, files_list, file_count
-    )
+- Brief plan then IMMEDIATE tool call",
+        context_path, files_section, rules_section, script_template
+    ))
 }
 
 // --- Agent Logic ---
@@ -166,11 +195,15 @@ pub async fn run_agent_step(
 
     // Iterative Nudge Loop (max 3 attempts)
     let mut attempts = 0;
+    // We use a temporary history for the retry loop so we don't pollute the main history with failed attempts
+    let mut current_context = history.clone();
+    let mut last_response: Option<Message> = None;
+
     while attempts < 3 {
         let response_msg = if model.starts_with("antigravity") {
             crate::llm::clients::antigravity::chat_stream(
                 "gemini-3-flash",
-                history.clone(),
+                current_context.clone(),
                 Some(tools.clone()),
                 |_| {},
             )
@@ -181,33 +214,54 @@ pub async fn run_agent_step(
                 .openai
                 .ok_or("LLM Error: No OpenAI API Key set. Please configure it in Settings.")?;
             let model_name = model.strip_prefix("openai:").unwrap_or("gpt-4");
-            crate::llm::clients::openai::chat_openai(model_name, history.clone(), &key).await?
+            crate::llm::clients::openai::chat_openai(model_name, current_context.clone(), &key)
+                .await?
         } else if model.starts_with("gemini:") {
             let keys = crate::utils::config::load_api_keys();
             let key = keys
                 .gemini
                 .ok_or("LLM Error: No Gemini API Key set. Please configure it in Settings.")?;
             let model_name = model.strip_prefix("gemini:").unwrap_or("gemini-1.5-pro");
-            crate::llm::clients::gemini::chat_gemini(model_name, history.clone(), &key).await?
+            crate::llm::clients::gemini::chat_gemini(model_name, current_context.clone(), &key)
+                .await?
         } else {
-            chat(&ollama_url, &model, history.clone(), Some(tools.clone())).await?
+            chat(
+                &ollama_url,
+                &model,
+                current_context.clone(),
+                Some(tools.clone()),
+            )
+            .await?
         };
-        history.push(response_msg.clone());
 
-        // 3. Check for Tool Calls
-        if let Some(calls) = &response_msg.tool_calls {
-            if !calls.is_empty() {
-                let call = &calls[0];
+        last_response = Some(response_msg.clone());
+
+        // 3. Check for Tool Calls (Extract command first to avoid borrow/move conflict)
+        let tool_command = if let Some(calls) = &response_msg.tool_calls {
+            if let Some(call) = calls.first() {
                 if call.function.name == "run_powershell" {
-                    let args = &call.function.arguments;
-                    if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
-                        return Ok(AgentStepResult {
-                            response: AgentResponse::CommandProposal(cmd.to_string()),
-                            updated_history: history,
-                        });
-                    }
+                    call.function
+                        .arguments
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        } else {
+            None
+        };
+
+        if let Some(cmd) = tool_command {
+            // Success! Update the REAL history and return
+            history.push(response_msg);
+            return Ok(AgentStepResult {
+                response: AgentResponse::CommandProposal(cmd),
+                updated_history: history,
+            });
         }
 
         // 4. Fallback: Check for Markdown Code Blocks
@@ -217,7 +271,8 @@ pub async fn run_agent_step(
             || content_lower.contains("task complete");
 
         if !is_success_summary {
-            let content = &response_msg.content;
+            // Clone content to avoid borrowing response_msg
+            let content = response_msg.content.clone();
             let code_block_pattern = "```";
             if let Some(start) = content.find(code_block_pattern) {
                 let rest = &content[start + 3..];
@@ -231,8 +286,11 @@ pub async fn run_agent_step(
                 if let Some(end) = code_rest.find("```") {
                     let command_candidate = &code_rest[..end].trim();
                     if !command_candidate.is_empty() && !command_candidate.contains("input1.mp4") {
+                        // Success! Update the REAL history and return
+                        let cmd_string = command_candidate.to_string();
+                        history.push(response_msg);
                         return Ok(AgentStepResult {
-                            response: AgentResponse::CommandProposal(command_candidate.to_string()),
+                            response: AgentResponse::CommandProposal(cmd_string),
                             updated_history: history,
                         });
                     }
@@ -266,13 +324,15 @@ pub async fn run_agent_step(
             && !content_lower.contains("fail");
 
         if (has_intent || is_short_explanation) && not_complete {
-            let nudge_count = history
+            let nudge_count = current_context
                 .iter()
                 .filter(|m| m.content.contains("EXECUTE NOW"))
                 .count();
 
             if nudge_count < 2 {
-                history.push(Message {
+                // Add to temporary context ONLY
+                current_context.push(response_msg);
+                current_context.push(Message {
                     role: "system".to_string(),
                     content: "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW.".to_string(),
                     tool_calls: None,
@@ -282,17 +342,27 @@ pub async fn run_agent_step(
             }
         }
 
-        // No valid tool call or code block, so it's a text response
+        // No valid tool call or code block, so it's a text response (success or final failure)
+        history.push(response_msg.clone());
         return Ok(AgentStepResult {
             response: AgentResponse::Text(response_msg.content),
             updated_history: history,
         });
     }
 
-    Ok(AgentStepResult {
-        response: AgentResponse::Text(
-            "Agent failed to respond correctly after retries.".to_string(),
-        ),
-        updated_history: history,
-    })
+    // If we exit loop, we failed to get a good response. Use the last one.
+    if let Some(msg) = last_response {
+        history.push(msg.clone());
+        Ok(AgentStepResult {
+            response: AgentResponse::Text(msg.content),
+            updated_history: history,
+        })
+    } else {
+        Ok(AgentStepResult {
+            response: AgentResponse::Text(
+                "Agent failed to respond correctly after retries.".to_string(),
+            ),
+            updated_history: history,
+        })
+    }
 }

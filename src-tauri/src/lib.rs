@@ -94,9 +94,9 @@ fn init_agent_conversation(
     context_path: String,
     selected_files: Vec<String>,
     user_prompt: String,
-) -> Vec<Message> {
-    let system_prompt = agent::get_initial_system_prompt(&context_path, &selected_files);
-    vec![
+) -> Result<Vec<Message>, String> {
+    let system_prompt = agent::get_initial_system_prompt(&context_path, &selected_files)?;
+    Ok(vec![
         Message {
             role: "system".to_string(),
             content: system_prompt,
@@ -107,7 +107,7 @@ fn init_agent_conversation(
             content: user_prompt,
             tool_calls: None,
         },
-    ]
+    ])
 }
 
 #[tauri::command]

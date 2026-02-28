@@ -196,14 +196,45 @@ pub async fn chat_stream(
     for msg in messages {
         if msg.role == "system" {
             system_prompts.push(msg.content);
-        } else {
-            let role = if msg.role == "assistant" {
-                "model"
-            } else {
-                "user"
-            }; // Gemini uses 'model'
+        } else if msg.role == "tool" {
+            // Tool results → send as user message with clear labeling
+            // so Gemini understands this is the output of a previously executed command
             contents.push(Content {
-                role: role.to_string(),
+                role: "user".to_string(),
+                parts: vec![Part {
+                    text: format!("[Command Output (already executed)]:\n{}", msg.content),
+                }],
+            });
+        } else if msg.role == "assistant" {
+            // For assistant messages that had tool_calls, append a description
+            // of what was executed so Gemini knows it already ran the command
+            let mut text = msg.content.clone();
+            if let Some(tool_calls) = &msg.tool_calls {
+                for tc in tool_calls {
+                    let cmd_summary = if let Some(cmd) = tc
+                        .function
+                        .arguments
+                        .get("command")
+                        .and_then(|v| v.as_str())
+                    {
+                        format!(
+                            "\n\n[Already executed {} with command: {}]",
+                            tc.function.name, cmd
+                        )
+                    } else {
+                        format!("\n\n[Already executed {}]", tc.function.name)
+                    };
+                    text.push_str(&cmd_summary);
+                }
+            }
+            contents.push(Content {
+                role: "model".to_string(),
+                parts: vec![Part { text }],
+            });
+        } else {
+            // User messages
+            contents.push(Content {
+                role: "user".to_string(),
                 parts: vec![Part { text: msg.content }],
             });
         }
