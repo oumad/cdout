@@ -23,7 +23,14 @@
     /* gray-600 */
 }
 
-body {
-    background-color: #030712;
-    /* gray-950 */
+html, body {
+    background: transparent;
+}
+
+.drag-region {
+    -webkit-app-region: drag;
+}
+
+.no-drag {
+    -webkit-app-region: no-drag;
 }
