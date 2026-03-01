@@ -3,16 +3,23 @@ use std::fs;
 use std::path::PathBuf;
 
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+const DEFAULT_HOTKEY: &str = "Ctrl+Alt+A";
 const CONFIG_FILE_NAME: &str = "shuttle_config.json";
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct AppConfig {
     #[serde(default = "default_ollama_url")]
     pub ollama_url: String,
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
 }
 
 fn default_ollama_url() -> String {
     DEFAULT_OLLAMA_URL.to_string()
+}
+
+fn default_hotkey() -> String {
+    DEFAULT_HOTKEY.to_string()
 }
 
 fn get_config_path() -> PathBuf {
@@ -34,6 +41,7 @@ fn load_config() -> AppConfig {
     }
     AppConfig {
         ollama_url: DEFAULT_OLLAMA_URL.to_string(),
+        hotkey: DEFAULT_HOTKEY.to_string(),
     }
 }
 
@@ -61,6 +69,16 @@ pub fn get_ollama_url() -> String {
 pub fn set_ollama_url(url: String) -> Result<(), String> {
     let mut config = load_config();
     config.ollama_url = url;
+    save_config(&config)
+}
+
+pub fn get_hotkey() -> String {
+    load_config().hotkey
+}
+
+pub fn set_hotkey(hotkey: String) -> Result<(), String> {
+    let mut config = load_config();
+    config.hotkey = hotkey;
     save_config(&config)
 }
 
