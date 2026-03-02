@@ -1,4 +1,5 @@
 mod auth;
+mod constants;
 mod features;
 mod llm;
 mod utils;
@@ -6,10 +7,10 @@ mod utils;
 use auth::antigravity;
 use features::agent;
 use features::explorer;
+use features::prompts;
 use llm::clients::ollama;
 use llm::Message;
 use utils::config;
-
 
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
@@ -18,13 +19,7 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-
 use features::agent::AgentStepResult;
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
 
 #[tauri::command]
 fn get_explorer_status() -> Result<explorer::ExplorerState, String> {
@@ -39,18 +34,20 @@ fn get_explorer_debug() -> Result<explorer::ExplorerDebugInfo, String> {
 #[tauri::command]
 async fn get_ollama_models() -> Result<Vec<String>, String> {
     let url = config::get_ollama_url();
-    let mut models = ollama::list_models(&url).await.unwrap_or_default();
+    let mut models = ollama::list_models(&url)
+        .await
+        .map_err(|e| format!("Ollama connection failed: {}", e))
+        .unwrap_or_default();
 
     if antigravity::load_credentials().is_some() {
         models.push("antigravity (gemini-3-flash)".to_string());
     }
 
-    // Add OpenAI/Gemini generic
     let api_keys = config::load_api_keys();
-    if api_keys.openai.is_some() && !api_keys.openai.as_ref().unwrap().is_empty() {
+    if api_keys.openai.as_ref().is_some_and(|k| !k.is_empty()) {
         models.push("openai:gpt-4o".to_string());
     }
-    if api_keys.gemini.is_some() && !api_keys.gemini.as_ref().unwrap().is_empty() {
+    if api_keys.gemini.as_ref().is_some_and(|k| !k.is_empty()) {
         models.push("gemini:gemini-1.5-pro".to_string());
     }
 
@@ -58,13 +55,17 @@ async fn get_ollama_models() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn get_ollama_url() -> String {
-    config::get_ollama_url()
+fn get_ollama_url() -> Result<String, String> {
+    Ok(config::get_ollama_url())
 }
 
 #[tauri::command]
 fn set_ollama_url(url: String) -> Result<(), String> {
-    config::set_ollama_url(url)
+    let trimmed = url.trim().to_string();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err("URL must start with http:// or https://".to_string());
+    }
+    config::set_ollama_url(trimmed)
 }
 
 #[tauri::command]
@@ -75,24 +76,31 @@ async fn login_antigravity() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn get_antigravity_status() -> Option<String> {
-    let creds = antigravity::load_credentials();
-    creds.and_then(|c| c.email)
+async fn get_antigravity_status() -> Result<Option<String>, String> {
+    Ok(antigravity::load_credentials().and_then(|c| c.email))
 }
 
 #[tauri::command]
 async fn set_openai_key(key: String) -> Result<(), String> {
-    config::set_openai_key(key)
+    let trimmed = key.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    config::set_openai_key(trimmed)
 }
 
 #[tauri::command]
 async fn set_gemini_key(key: String) -> Result<(), String> {
-    config::set_gemini_key(key)
+    let trimmed = key.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    config::set_gemini_key(trimmed)
 }
 
 #[tauri::command]
-async fn get_api_keys() -> config::ApiKeys {
-    config::load_api_keys()
+async fn get_api_keys() -> Result<config::ApiKeys, String> {
+    Ok(config::load_api_keys())
 }
 
 // --- Agent Commands ---
@@ -103,7 +111,7 @@ fn init_agent_conversation(
     selected_files: Vec<String>,
     user_prompt: String,
 ) -> Result<Vec<Message>, String> {
-    let system_prompt = agent::get_initial_system_prompt(&context_path, &selected_files)?;
+    let system_prompt = prompts::get_initial_system_prompt(&context_path, &selected_files)?;
     Ok(vec![
         Message {
             role: "system".to_string(),
@@ -120,19 +128,17 @@ fn init_agent_conversation(
 
 #[tauri::command]
 async fn run_agent_step(model: String, history: Vec<Message>) -> Result<AgentStepResult, String> {
-    let url = config::get_ollama_url();
-    agent::run_agent_step(url, model, history).await
+    agent::run_agent_step(model, history).await
 }
 
 #[tauri::command]
 async fn execute_powershell(command: String, cwd: Option<String>) -> Result<String, String> {
-    // This is called when user APPROVES the proposal
     Ok(agent::run_powershell_command(&command, cwd.as_deref()))
 }
 
 #[tauri::command]
-fn get_hotkey() -> String {
-    config::get_hotkey()
+fn get_hotkey() -> Result<String, String> {
+    Ok(config::get_hotkey())
 }
 
 #[tauri::command]
@@ -153,7 +159,11 @@ fn write_file_list(files: Vec<String>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn spotlight_submit(prompt: String, model: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+fn spotlight_submit(
+    prompt: String,
+    model: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
     if let Some(spotlight) = app_handle.get_webview_window("spotlight") {
         spotlight.hide().ok();
     }
@@ -173,9 +183,7 @@ fn spotlight_submit(prompt: String, model: String, app_handle: tauri::AppHandle)
     Ok(())
 }
 
-
 /// Position a window centered on the monitor where the mouse cursor currently is.
-/// Uses only Tauri cross-platform APIs — no OS-specific code.
 fn center_on_cursor_monitor(window: &tauri::WebviewWindow) {
     let cursor = match window.cursor_position() {
         Ok(pos) => pos,
@@ -223,7 +231,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            greet,
             get_explorer_status,
             get_explorer_debug,
             get_ollama_models,
@@ -262,17 +269,19 @@ pub fn run() {
                 .icon(app.default_window_icon().cloned().unwrap())
                 .tooltip("Shuttle")
                 .menu(&tray_menu)
-                .on_menu_event(move |app_handle: &tauri::AppHandle, event| match event.id().as_ref() {
-                    "show" => {
-                        if let Some(w) = app_handle.get_webview_window("main") {
-                            show_window(&w);
+                .on_menu_event(
+                    move |app_handle: &tauri::AppHandle, event| match event.id().as_ref() {
+                        "show" => {
+                            if let Some(w) = app_handle.get_webview_window("main") {
+                                show_window(&w);
+                            }
                         }
-                    }
-                    "quit" => {
-                        app_handle.exit(0);
-                    }
-                    _ => {}
-                })
+                        "quit" => {
+                            app_handle.exit(0);
+                        }
+                        _ => {}
+                    },
+                )
                 .on_tray_icon_event({
                     let w = main_window.clone();
                     move |_tray, event| {
@@ -290,7 +299,9 @@ pub fn run() {
             // --- Global Hotkey ---
             let hotkey_str = config::get_hotkey();
             let hotkey_spotlight = spotlight_window.clone();
-            let shortcut = hotkey_str.parse::<Shortcut>().expect("Invalid hotkey in config");
+            let shortcut = hotkey_str
+                .parse::<Shortcut>()
+                .expect("Invalid hotkey in config");
 
             // Unregister first in case a previous instance left it registered
             let _ = app.global_shortcut().unregister(shortcut);
@@ -304,7 +315,10 @@ pub fn run() {
                     }
                 },
             ) {
-                eprintln!("Warning: Failed to register global hotkey '{}': {}", hotkey_str, e);
+                eprintln!(
+                    "Warning: Failed to register global hotkey '{}': {}",
+                    hotkey_str, e
+                );
             }
 
             // --- Close to Tray (main window only) ---

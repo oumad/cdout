@@ -42,6 +42,8 @@ pub struct ShellWindowInfo {
 
 /// Get the class name of a window
 fn get_window_class(hwnd: HWND) -> String {
+    // SAFETY: GetClassNameW is a read-only Win32 API call with a fixed-size stack buffer.
+    // The HWND is obtained from other safe Win32 APIs (GetForegroundWindow, GetWindow).
     unsafe {
         let mut class_buf = [0u16; 256];
         let class_len = GetClassNameW(hwnd, &mut class_buf);
@@ -55,6 +57,7 @@ fn get_window_class(hwnd: HWND) -> String {
 
 /// Get the title of a window
 fn get_window_title(hwnd: HWND) -> String {
+    // SAFETY: GetWindowTextW is a read-only Win32 API call with a fixed-size stack buffer.
     unsafe {
         let mut buf = [0u16; 512];
         let len = GetWindowTextW(hwnd, &mut buf);
@@ -71,6 +74,8 @@ fn get_window_title(hwnd: HWND) -> String {
 /// Find the first Explorer window in Z-order starting from (and including) the given hwnd
 /// If start_hwnd is an Explorer window, returns it. Otherwise walks down Z-order.
 fn find_explorer_window_from(start_hwnd: HWND) -> Option<(HWND, String)> {
+    // SAFETY: Walking the Z-order via GetWindow/IsWindowVisible/GetClassNameW.
+    // All read-only Win32 window enumeration APIs with valid HWNDs.
     unsafe {
         let mut current = start_hwnd;
 
@@ -126,6 +131,10 @@ fn title_matches_location(window_title: &str, location_name: &str) -> bool {
 
 /// Get debug info about all Explorer windows/tabs
 pub fn get_explorer_debug_info() -> Result<ExplorerDebugInfo> {
+    // SAFETY: COM initialization and IShellWindows/IWebBrowserApp enumeration.
+    // CoInitializeEx is called per-thread as required. COM interfaces are accessed
+    // through proper QueryInterface (cast) calls. VARIANT unions are initialized
+    // with correct vt discriminant before access.
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
@@ -204,6 +213,9 @@ pub fn get_explorer_debug_info() -> Result<ExplorerDebugInfo> {
 }
 
 pub fn get_active_explorer_info() -> Result<ExplorerState> {
+    // SAFETY: Same COM pattern as get_explorer_debug_info — CoInitializeEx,
+    // IShellWindows enumeration, IWebBrowserApp/IShellFolderViewDual access.
+    // All VARIANT unions initialized with correct vt before field access.
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
