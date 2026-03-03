@@ -4,6 +4,15 @@ use serde_json::Value;
 pub mod clients;
 pub mod router;
 
+// Streaming types for Tauri Channel
+#[derive(Serialize, Clone)]
+#[serde(tag = "kind")]
+pub enum StreamChunk {
+    TextDelta { text: String },
+    Done { message: Message },
+    Error { error: String },
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
     pub role: String,

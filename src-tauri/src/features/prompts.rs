@@ -6,6 +6,7 @@ use std::io::Write;
 pub fn get_initial_system_prompt(
     context_path: &str,
     selected_files: &Vec<String>,
+    skills_section: &str,
 ) -> Result<String, String> {
     let file_count = selected_files.len();
 
@@ -95,7 +96,7 @@ SCRIPT TEMPLATE:
 REMEMBER:
 - Call the tool, don't just show code
 - PowerShell only, no Python
-- Brief plan then IMMEDIATE tool call",
-        context_path, files_section, rules_section, script_template
+- Brief plan then IMMEDIATE tool call{}",
+        context_path, files_section, rules_section, script_template, skills_section
     ))
 }

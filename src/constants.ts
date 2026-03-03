@@ -42,8 +42,11 @@ export const CMD = {
   SET_HOTKEY: "set_hotkey",
   INIT_AGENT_CONVERSATION: "init_agent_conversation",
   RUN_AGENT_STEP: "run_agent_step",
+  RUN_AGENT_STEP_STREAM: "run_agent_step_stream",
   EXECUTE_POWERSHELL: "execute_powershell",
   WRITE_FILE_LIST: "write_file_list",
+  GET_CLI_CREDENTIALS_STATUS: "get_cli_credentials_status",
+  LIST_SKILLS: "list_skills",
   SPOTLIGHT_SUBMIT: "spotlight_submit",
 } as const;
 

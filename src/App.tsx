@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -12,9 +13,11 @@ import {
   RefreshCw,
   Settings,
   X,
+  CheckCircle,
+  XCircle,
 } from "lucide-react";
 import "./App.css";
-import type { Message, SpotlightSubmitPayload, ApiKeysResponse } from "./types";
+import type { Message, SpotlightSubmitPayload, ApiKeysResponse, Skill, CliCredentialsStatus } from "./types";
 import {
   BLUR_GRACE_MS,
   FOCUS_DELAY_MS,
@@ -159,6 +162,12 @@ function MainApp() {
   const [openaiKey, setOpenaiKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
 
+  // Skills State
+  const [skills, setSkills] = useState<Skill[]>([]);
+
+  // CLI Credentials State
+  const [cliCredentials, setCliCredentials] = useState<CliCredentialsStatus | null>(null);
+
   // Conversation State
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [pendingCommand, setPendingCommand] = useState<string | null>(null);
@@ -171,6 +180,9 @@ function MainApp() {
   const autoStepCount = useRef(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Streaming State
+  const [streamingText, setStreamingText] = useState("");
 
   // UI State
   const [isContextOpen, setIsContextOpen] = useState(false);
@@ -201,6 +213,8 @@ function MainApp() {
     };
     loadUrl();
     api.getAntigravityStatus().then(setAntigravityEmail).catch(console.error);
+    api.listSkills().then(setSkills).catch(console.error);
+    api.getCliCredentialsStatus().then(setCliCredentials).catch(console.error);
     api.getApiKeys().then((keys: ApiKeysResponse) => {
       setOpenaiKey(keys.openai || "");
       setGeminiKey(keys.gemini || "");
@@ -237,7 +251,7 @@ function MainApp() {
   // Auto-scroll to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatHistory, pendingCommand, isProcessing, isExecuting]);
+  }, [chatHistory, pendingCommand, isProcessing, isExecuting, streamingText]);
 
   async function getExplorerStatus() {
     setLoading(true);
@@ -331,10 +345,17 @@ function MainApp() {
   // Step 2: Run Agent Step
   async function runAgentStep(history: Message[], shouldAutoExecute = autoExecute, modelOverride?: string) {
     try {
-      const result = await api.runAgentStep(
+      setStreamingText("");
+      const result = await api.runAgentStepStream(
         modelOverride || modelName,
-        history
+        history,
+        (chunk) => {
+          if (chunk.kind === "TextDelta") {
+            setStreamingText((prev) => prev + chunk.text);
+          }
+        }
       );
+      setStreamingText("");
 
       setChatHistory(result.updated_history);
 
@@ -390,6 +411,7 @@ function MainApp() {
     } catch (e) {
       console.error(`Error running agent step: ${e}`);
       showError(`LLM Error: ${String(e)}`);
+      setStreamingText("");
     } finally {
       setIsProcessing(false);
     }
@@ -618,6 +640,71 @@ function MainApp() {
                       />
                     </div>
                   </div>
+                  {cliCredentials && (
+                    <div className="pt-2 border-t border-gray-800 space-y-1.5">
+                      <label className="block text-xs text-gray-400 mb-1">CLI Providers</label>
+                      <div className={`flex items-center justify-between px-2 py-1.5 rounded text-xs ${
+                        cliCredentials.claude_code
+                          ? 'bg-emerald-900/20 border border-emerald-500/20'
+                          : 'bg-gray-800/50 border border-gray-700/50'
+                      }`}>
+                        <span className={cliCredentials.claude_code ? 'text-emerald-400' : 'text-gray-500'}>
+                          Claude Code
+                        </span>
+                        {cliCredentials.claude_code ? (
+                          <CheckCircle size={12} className="text-emerald-500" />
+                        ) : (
+                          <span className="text-[10px] text-gray-600">Not found</span>
+                        )}
+                      </div>
+                      <div className={`flex items-center justify-between px-2 py-1.5 rounded text-xs ${
+                        cliCredentials.codex
+                          ? 'bg-emerald-900/20 border border-emerald-500/20'
+                          : 'bg-gray-800/50 border border-gray-700/50'
+                      }`}>
+                        <span className={cliCredentials.codex ? 'text-emerald-400' : 'text-gray-500'}>
+                          Codex CLI
+                        </span>
+                        {cliCredentials.codex ? (
+                          <CheckCircle size={12} className="text-emerald-500" />
+                        ) : (
+                          <span className="text-[10px] text-gray-600">Not found</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {skills.length > 0 && (
+                    <div className="pt-2 border-t border-gray-800 space-y-1.5">
+                      <label className="block text-xs text-gray-400 mb-1">Skills</label>
+                      {skills.map((skill) => (
+                        <div
+                          key={skill.metadata.name}
+                          className={`flex items-center justify-between px-2 py-1.5 rounded text-xs ${
+                            skill.available
+                              ? 'bg-emerald-900/20 border border-emerald-500/20'
+                              : 'bg-gray-800/50 border border-gray-700/50'
+                          }`}
+                        >
+                          <div className="flex flex-col">
+                            <span className={skill.available ? 'text-emerald-400' : 'text-gray-500'}>
+                              {skill.metadata.name}
+                            </span>
+                            <span className="text-[10px] text-gray-600">{skill.metadata.description}</span>
+                          </div>
+                          {skill.available ? (
+                            <CheckCircle size={12} className="text-emerald-500 shrink-0" />
+                          ) : (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <XCircle size={12} className="text-gray-600" />
+                              <span className="text-[10px] text-gray-600">
+                                {skill.missing_bins.join(', ')}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex gap-2 pt-1 border-t border-gray-800 mt-2">
                     <button
                       onClick={async () => {
@@ -720,7 +807,22 @@ function MainApp() {
               />
             ))}
 
-            {(isProcessing || isExecuting) && !pendingCommand && (
+            {/* Streaming bubble */}
+            {streamingText && (
+              <div className="flex gap-3 group">
+                <div className="w-6 h-6 rounded flex items-center justify-center shrink-0 mt-0.5 bg-emerald-600 text-white">
+                  <Bot size={12} />
+                </div>
+                <div className="max-w-[85%] text-sm leading-relaxed text-gray-300">
+                  <div className="prose prose-invert prose-xs max-w-none prose-p:leading-snug prose-p:my-1 prose-headings:my-2 prose-li:my-0.5 prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10 prose-pre:text-[11px] prose-pre:p-2 prose-code:text-indigo-300 prose-code:bg-white/5 prose-code:px-1 prose-code:rounded prose-code:before:content-none prose-code:after:content-none">
+                    <ReactMarkdown>{streamingText}</ReactMarkdown>
+                  </div>
+                  <span className="inline-block w-1.5 h-4 bg-emerald-500 animate-pulse ml-0.5 align-text-bottom" />
+                </div>
+              </div>
+            )}
+
+            {(isProcessing || isExecuting) && !pendingCommand && !streamingText && (
               <div className="flex gap-3 pl-1 animate-in fade-in duration-300 items-center">
                 <div className={`w-6 h-6 rounded flex items-center justify-center shrink-0 animate-pulse ${isExecuting ? 'bg-indigo-600/20 text-indigo-500' : 'bg-emerald-600/20 text-emerald-500'}`}>
                   {isExecuting ? <Terminal size={12} /> : <Bot size={12} />}

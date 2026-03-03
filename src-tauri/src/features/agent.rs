@@ -3,7 +3,7 @@ use crate::constants::{
     SHORT_EXPLANATION_LIMIT, TOOL_NAME,
 };
 use crate::llm::router;
-use crate::llm::{Message, ToolDefinition, ToolFunction};
+use crate::llm::{Message, StreamChunk, ToolDefinition, ToolFunction};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::process::Command;
@@ -207,6 +207,121 @@ pub async fn run_agent_step(
             updated_history: history,
         })
     } else {
+        Ok(AgentStepResult {
+            response: AgentResponse::Text(
+                "Agent failed to respond correctly after retries.".to_string(),
+            ),
+            updated_history: history,
+        })
+    }
+}
+
+pub async fn run_agent_step_stream(
+    model: String,
+    mut history: Vec<Message>,
+    channel: tauri::ipc::Channel<StreamChunk>,
+) -> Result<AgentStepResult, String> {
+    let tools = build_tools();
+
+    let mut attempts = 0;
+    let mut current_context = history.clone();
+    let mut last_response: Option<Message> = None;
+
+    while attempts < MAX_NUDGE_ATTEMPTS {
+        let ch = channel.clone();
+        let on_chunk = move |text: String| {
+            let _ = ch.send(StreamChunk::TextDelta { text });
+        };
+
+        let response_msg = router::route_chat_stream(
+            &model,
+            current_context.clone(),
+            Some(tools.clone()),
+            on_chunk,
+        )
+        .await?;
+
+        last_response = Some(response_msg.clone());
+
+        // Check for tool calls
+        if let Some(cmd) = extract_tool_command(&response_msg) {
+            history.push(response_msg);
+            let result = AgentStepResult {
+                response: AgentResponse::CommandProposal(cmd),
+                updated_history: history,
+            };
+            let _ = channel.send(StreamChunk::Done {
+                message: result.updated_history.last().unwrap().clone(),
+            });
+            return Ok(result);
+        }
+
+        // Fallback: check for markdown code blocks
+        let content_lower = response_msg.content.to_lowercase();
+        if !is_success_summary(&content_lower) {
+            if let Some(cmd) = extract_code_block(&response_msg.content) {
+                history.push(response_msg);
+                let result = AgentStepResult {
+                    response: AgentResponse::CommandProposal(cmd),
+                    updated_history: history,
+                };
+                let _ = channel.send(StreamChunk::Done {
+                    message: result.updated_history.last().unwrap().clone(),
+                });
+                return Ok(result);
+            }
+        }
+
+        // Auto-nudge
+        if should_nudge(&response_msg.content, &content_lower) {
+            let nudge_count = current_context
+                .iter()
+                .filter(|m| m.content.contains("EXECUTE NOW"))
+                .count();
+
+            if nudge_count < MAX_NUDGE_ATTEMPTS - 1 {
+                current_context.push(response_msg);
+                current_context.push(Message {
+                    role: "system".to_string(),
+                    content: "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW.".to_string(),
+                    tool_calls: None,
+                });
+                attempts += 1;
+                continue;
+            }
+        }
+
+        // Text response
+        history.push(response_msg.clone());
+        let result = AgentStepResult {
+            response: AgentResponse::Text(response_msg.content.clone()),
+            updated_history: history,
+        };
+        let _ = channel.send(StreamChunk::Done {
+            message: response_msg,
+        });
+        return Ok(result);
+    }
+
+    // Exhausted retries
+    if let Some(msg) = last_response {
+        history.push(msg.clone());
+        let _ = channel.send(StreamChunk::Done {
+            message: msg.clone(),
+        });
+        Ok(AgentStepResult {
+            response: AgentResponse::Text(msg.content),
+            updated_history: history,
+        })
+    } else {
+        let fallback_msg = Message {
+            role: "assistant".to_string(),
+            content: "Agent failed to respond correctly after retries.".to_string(),
+            tool_calls: None,
+        };
+        let _ = channel.send(StreamChunk::Done {
+            message: fallback_msg,
+        });
         Ok(AgentStepResult {
             response: AgentResponse::Text(
                 "Agent failed to respond correctly after retries.".to_string(),

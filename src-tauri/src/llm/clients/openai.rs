@@ -1,4 +1,5 @@
 use crate::llm::{FunctionCall, Message, ToolCall};
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::json;
 
@@ -38,6 +39,122 @@ pub async fn chat_openai(
         .map_err(|e| format!("Failed to parse OpenAI response: {}", e))?;
 
     parse_openai_response(&json)
+}
+
+pub async fn chat_openai_stream(
+    model: &str,
+    messages: Vec<Message>,
+    api_key: &str,
+    tools: Option<Vec<crate::llm::ToolDefinition>>,
+    callback: impl Fn(String) + Send + 'static,
+) -> Result<Message, String> {
+    let client = Client::new();
+    let url = "https://api.openai.com/v1/chat/completions";
+
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "temperature": 0.7,
+        "stream": true
+    });
+
+    if let Some(t) = &tools {
+        body["tools"] = json!(t);
+    }
+
+    let res = client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("OpenAI Request Failed: {}", e))?;
+
+    if !res.status().is_success() {
+        let text = res.text().await.unwrap_or_default();
+        if text.contains("insufficient_quota") {
+            return Err("OpenAI Quota Exceeded: Your API credit balance is zero or expired.".to_string());
+        }
+        return Err(format!("OpenAI API Error: {}", text));
+    }
+
+    let mut stream = res.bytes_stream();
+    let mut full_content = String::new();
+    let mut buffer = String::new();
+
+    // Accumulate tool call deltas: index -> (name, arguments_str)
+    let mut tool_calls_acc: std::collections::HashMap<usize, (String, String)> =
+        std::collections::HashMap::new();
+
+    while let Some(item) = stream.next().await {
+        let chunk = item.map_err(|e| format!("Stream error: {}", e))?;
+        let s = String::from_utf8_lossy(&chunk);
+        buffer.push_str(&s);
+
+        while let Some(pos) = buffer.find('\n') {
+            let line = buffer[..pos].trim().to_string();
+            buffer = buffer[pos + 1..].to_string();
+
+            if line.is_empty() || line == "data: [DONE]" {
+                continue;
+            }
+
+            if let Some(json_str) = line.strip_prefix("data: ") {
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(json_str) {
+                    let delta = &data["choices"][0]["delta"];
+
+                    // Text content delta
+                    if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
+                        if !text.is_empty() {
+                            full_content.push_str(text);
+                            callback(text.to_string());
+                        }
+                    }
+
+                    // Tool call deltas
+                    if let Some(tc_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                        for tc in tc_arr {
+                            let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                            let entry = tool_calls_acc.entry(idx).or_insert_with(|| (String::new(), String::new()));
+
+                            if let Some(func) = tc.get("function") {
+                                if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                                    entry.0.push_str(name);
+                                }
+                                if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
+                                    entry.1.push_str(args);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build tool_calls from accumulated deltas
+    let tool_calls = if tool_calls_acc.is_empty() {
+        None
+    } else {
+        let mut calls: Vec<(usize, ToolCall)> = tool_calls_acc
+            .into_iter()
+            .map(|(idx, (name, args_str))| {
+                let arguments: serde_json::Value =
+                    serde_json::from_str(&args_str).unwrap_or(json!({}));
+                (idx, ToolCall {
+                    function: FunctionCall { name, arguments },
+                })
+            })
+            .collect();
+        calls.sort_by_key(|(idx, _)| *idx);
+        Some(calls.into_iter().map(|(_, tc)| tc).collect())
+    };
+
+    Ok(Message {
+        role: "assistant".to_string(),
+        content: full_content,
+        tool_calls,
+    })
 }
 
 /// Parse an OpenAI-compatible chat completion response, including tool_calls.

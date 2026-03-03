@@ -39,3 +39,35 @@ export interface SpotlightSubmitPayload {
   prompt: string;
   model: string;
 }
+
+// Skills
+export interface SkillRequirements {
+  bins: string[];
+  any_bins: string[];
+}
+
+export interface SkillMetadata {
+  name: string;
+  description: string;
+  requires: SkillRequirements | null;
+}
+
+export interface Skill {
+  metadata: SkillMetadata;
+  body: string;
+  source_path: string;
+  available: boolean;
+  missing_bins: string[];
+}
+
+// CLI Credentials
+export interface CliCredentialsStatus {
+  claude_code: boolean;
+  codex: boolean;
+}
+
+// Streaming
+export type StreamChunk =
+  | { kind: "TextDelta"; text: string }
+  | { kind: "Done"; message: Message }
+  | { kind: "Error"; error: string };
