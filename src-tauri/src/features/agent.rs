@@ -37,8 +37,10 @@ pub fn run_powershell_command(command: &str, cwd: Option<&str>) -> String {
 
     match output {
         Ok(o) => {
+            let exit_code = o.status.code().unwrap_or(-1);
+            let success = o.status.success();
             let mut stdout = String::from_utf8_lossy(&o.stdout).to_string();
-            let mut stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
 
             if stdout.len() > MAX_OUTPUT_LEN {
                 let truncate_msg = format!(
@@ -48,22 +50,31 @@ pub fn run_powershell_command(command: &str, cwd: Option<&str>) -> String {
                 stdout.truncate(MAX_OUTPUT_LEN);
                 stdout.push_str(&truncate_msg);
             }
-            if stderr.len() > MAX_OUTPUT_LEN {
-                let truncate_msg = format!(
-                    "\n... [Error truncated, hiding {} characters] ...",
-                    stderr.len() - MAX_OUTPUT_LEN
-                );
-                stderr.truncate(MAX_OUTPUT_LEN);
-                stderr.push_str(&truncate_msg);
+
+            let mut result = if success {
+                format!("[Exit code: {} — Success]\n{}", exit_code, stdout)
+            } else {
+                format!("[Exit code: {} — Failed]\n{}", exit_code, stdout)
+            };
+
+            // Only include STDERR if it contains meaningful error info.
+            // Many tools (ffmpeg, etc.) write version banners to STDERR on success.
+            if !stderr.is_empty() && !success {
+                let mut stderr_trimmed = stderr;
+                if stderr_trimmed.len() > MAX_OUTPUT_LEN {
+                    let truncate_msg = format!(
+                        "\n... [Error truncated, hiding {} characters] ...",
+                        stderr_trimmed.len() - MAX_OUTPUT_LEN
+                    );
+                    stderr_trimmed.truncate(MAX_OUTPUT_LEN);
+                    stderr_trimmed.push_str(&truncate_msg);
+                }
+                result.push_str(&format!("\nSTDERR:\n{}", stderr_trimmed));
             }
 
-            if !stderr.is_empty() {
-                format!("STDOUT:\n{}\nSTDERR:\n{}", stdout, stderr)
-            } else {
-                stdout
-            }
+            result
         }
-        Err(e) => format!("Failed to execute command: {}", e),
+        Err(e) => format!("[Failed to execute command]\n{}", e),
     }
 }
 
@@ -103,6 +114,38 @@ fn extract_tool_command(msg: &Message) -> Option<String> {
             }
         })
     })
+}
+
+/// Fallback: extract command when the model outputs a raw tool call as text,
+/// e.g. `run_powershell[ARGS]{"command": "..."}` or `run_powershell({"command": "..."})`
+fn extract_raw_tool_call(content: &str) -> Option<String> {
+    let idx = content.find(TOOL_NAME)?;
+    let rest = &content[idx..];
+
+    // Find the "command" key
+    let cmd_key_idx = rest.find("\"command\"")?;
+    let after_key = &rest[cmd_key_idx + "\"command\"".len()..];
+
+    // Skip `: "` to reach the value
+    let after_colon = after_key.trim_start().strip_prefix(':')?;
+    let after_quote = after_colon.trim_start().strip_prefix('"')?;
+
+    // The command value ends at the last `"}` which closes the JSON object
+    let end_idx = after_quote.rfind("\"}")?;
+    let raw = &after_quote[..end_idx];
+
+    if raw.trim().is_empty() {
+        return None;
+    }
+
+    // Unescape basic JSON string escapes
+    let unescaped = raw
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\");
+
+    Some(unescaped)
 }
 
 fn extract_code_block(content: &str) -> Option<String> {
@@ -160,10 +203,19 @@ pub async fn run_agent_step(
             });
         }
 
-        // Fallback: check for markdown code blocks
+        // Fallback 1: check for markdown code blocks
         let content_lower = response_msg.content.to_lowercase();
         if !is_success_summary(&content_lower) {
             if let Some(cmd) = extract_code_block(&response_msg.content) {
+                history.push(response_msg);
+                return Ok(AgentStepResult {
+                    response: AgentResponse::CommandProposal(cmd),
+                    updated_history: history,
+                });
+            }
+
+            // Fallback 2: raw tool call as text (model didn't use function calling)
+            if let Some(cmd) = extract_raw_tool_call(&response_msg.content) {
                 history.push(response_msg);
                 return Ok(AgentStepResult {
                     response: AgentResponse::CommandProposal(cmd),
@@ -256,10 +308,23 @@ pub async fn run_agent_step_stream(
             return Ok(result);
         }
 
-        // Fallback: check for markdown code blocks
+        // Fallback 1: check for markdown code blocks
         let content_lower = response_msg.content.to_lowercase();
         if !is_success_summary(&content_lower) {
             if let Some(cmd) = extract_code_block(&response_msg.content) {
+                history.push(response_msg);
+                let result = AgentStepResult {
+                    response: AgentResponse::CommandProposal(cmd),
+                    updated_history: history,
+                };
+                let _ = channel.send(StreamChunk::Done {
+                    message: result.updated_history.last().unwrap().clone(),
+                });
+                return Ok(result);
+            }
+
+            // Fallback 2: raw tool call as text (model didn't use function calling)
+            if let Some(cmd) = extract_raw_tool_call(&response_msg.content) {
                 history.push(response_msg);
                 let result = AgentStepResult {
                     response: AgentResponse::CommandProposal(cmd),
@@ -328,5 +393,58 @@ pub async fn run_agent_step_stream(
             ),
             updated_history: history,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_raw_tool_call_args_format() {
+        let content = r#"run_powershell[ARGS]{"command": "$files = @('D:\\video\\a.mp4', 'D:\\video\\b.mp4')\nforeach ($file in $files) {\n  ffmpeg -i $file -vframes 1 $output\n}"}"#;
+        let cmd = extract_raw_tool_call(content).unwrap();
+        assert!(cmd.contains("$files = @("));
+        assert!(cmd.contains("ffmpeg -i $file"));
+        assert!(cmd.contains('\n')); // \n should be unescaped
+    }
+
+    #[test]
+    fn test_extract_raw_tool_call_parens_format() {
+        let content = r#"run_powershell({"command": "Get-ChildItem -Path ."})"#;
+        let cmd = extract_raw_tool_call(content).unwrap();
+        assert_eq!(cmd, "Get-ChildItem -Path .");
+    }
+
+    #[test]
+    fn test_extract_raw_tool_call_with_prefix_text() {
+        let content = r#"I'll extract the frames now. run_powershell[ARGS]{"command": "ffmpeg -i input.mp4 -vframes 1 out.png"}"#;
+        let cmd = extract_raw_tool_call(content).unwrap();
+        assert_eq!(cmd, "ffmpeg -i input.mp4 -vframes 1 out.png");
+    }
+
+    #[test]
+    fn test_extract_raw_tool_call_no_match() {
+        assert!(extract_raw_tool_call("Just some text").is_none());
+        assert!(extract_raw_tool_call("run_powershell without json").is_none());
+    }
+
+    #[test]
+    fn test_extract_raw_tool_call_escaped_quotes() {
+        let content = r#"run_powershell[ARGS]{"command": "echo \"hello world\""}"#;
+        let cmd = extract_raw_tool_call(content).unwrap();
+        assert_eq!(cmd, r#"echo "hello world""#);
+    }
+
+    #[test]
+    fn test_extract_code_block_powershell() {
+        let content = "Here's the command:\n```powershell\nGet-ChildItem -Path .\n```";
+        let cmd = extract_code_block(content).unwrap();
+        assert_eq!(cmd, "Get-ChildItem -Path .");
+    }
+
+    #[test]
+    fn test_extract_code_block_no_match() {
+        assert!(extract_code_block("Just text, no code block").is_none());
     }
 }

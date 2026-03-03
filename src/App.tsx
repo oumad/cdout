@@ -366,8 +366,8 @@ function MainApp() {
 
       if (result.response.type === "CommandProposal") {
         const cmd = result.response.content;
-        autoStepCount.current = 0;
-        if (shouldAutoExecute) {
+        autoStepCount.current++;
+        if (shouldAutoExecute && autoStepCount.current < MAX_AUTO_STEPS) {
           setIsExecuting(true);
           setIsProcessing(false);
           try {
@@ -385,6 +385,7 @@ function MainApp() {
             setPendingCommand(cmd);
           }
         } else {
+          if (shouldAutoExecute) setAutoExecute(false);
           setPendingCommand(cmd);
         }
       } else {
