@@ -5,11 +5,13 @@ mod llm;
 mod utils;
 
 use auth::antigravity;
+use auth::cli_credentials;
 use features::agent;
 use features::explorer;
 use features::prompts;
+use features::skills;
 use llm::clients::ollama;
-use llm::Message;
+use llm::{Message, StreamChunk};
 use utils::config;
 
 use tauri::{
@@ -49,6 +51,14 @@ async fn get_ollama_models() -> Result<Vec<String>, String> {
     }
     if api_keys.gemini.as_ref().is_some_and(|k| !k.is_empty()) {
         models.push("gemini:gemini-1.5-pro".to_string());
+    }
+
+    // CLI credential-based models
+    if cli_credentials::is_claude_code_available() {
+        models.push("claude:claude-sonnet-4-20250514".to_string());
+    }
+    if cli_credentials::is_codex_available() {
+        models.push("codex:gpt-4o".to_string());
     }
 
     Ok(models)
@@ -103,6 +113,11 @@ async fn get_api_keys() -> Result<config::ApiKeys, String> {
     Ok(config::load_api_keys())
 }
 
+#[tauri::command]
+fn get_cli_credentials_status() -> Result<cli_credentials::CliCredentialsStatus, String> {
+    Ok(cli_credentials::get_status())
+}
+
 // --- Agent Commands ---
 
 #[tauri::command]
@@ -110,8 +125,13 @@ fn init_agent_conversation(
     context_path: String,
     selected_files: Vec<String>,
     user_prompt: String,
+    app_handle: tauri::AppHandle,
 ) -> Result<Vec<Message>, String> {
-    let system_prompt = prompts::get_initial_system_prompt(&context_path, &selected_files)?;
+    let resource_dir = app_handle.path().resource_dir().ok();
+    let all_skills = skills::load_all_skills(resource_dir);
+    let skills_section = skills::get_skills_prompt_section(&all_skills);
+    let system_prompt =
+        prompts::get_initial_system_prompt(&context_path, &selected_files, &skills_section)?;
     Ok(vec![
         Message {
             role: "system".to_string(),
@@ -127,8 +147,23 @@ fn init_agent_conversation(
 }
 
 #[tauri::command]
+fn list_skills(app_handle: tauri::AppHandle) -> Result<Vec<skills::Skill>, String> {
+    let resource_dir = app_handle.path().resource_dir().ok();
+    Ok(skills::load_all_skills(resource_dir))
+}
+
+#[tauri::command]
 async fn run_agent_step(model: String, history: Vec<Message>) -> Result<AgentStepResult, String> {
     agent::run_agent_step(model, history).await
+}
+
+#[tauri::command]
+async fn run_agent_step_stream(
+    model: String,
+    history: Vec<Message>,
+    on_chunk: tauri::ipc::Channel<StreamChunk>,
+) -> Result<AgentStepResult, String> {
+    agent::run_agent_step_stream(model, history, on_chunk).await
 }
 
 #[tauri::command]
@@ -241,10 +276,13 @@ pub fn run() {
             set_openai_key,
             set_gemini_key,
             get_api_keys,
+            get_cli_credentials_status,
             get_hotkey,
             set_hotkey,
             init_agent_conversation,
+            list_skills,
             run_agent_step,
+            run_agent_step_stream,
             execute_powershell,
             write_file_list,
             spotlight_submit,

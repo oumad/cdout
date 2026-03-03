@@ -1,10 +1,13 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { CMD } from "../constants";
 import type {
   ExplorerState,
   Message,
   AgentStepResult,
   ApiKeysResponse,
+  StreamChunk,
+  Skill,
+  CliCredentialsStatus,
 } from "../types";
 
 // Explorer
@@ -71,6 +74,20 @@ export function runAgentStep(
   return invoke<AgentStepResult>(CMD.RUN_AGENT_STEP, { model, history });
 }
 
+export function runAgentStepStream(
+  model: string,
+  history: Message[],
+  onChunk: (chunk: StreamChunk) => void
+): Promise<AgentStepResult> {
+  const channel = new Channel<StreamChunk>();
+  channel.onmessage = onChunk;
+  return invoke<AgentStepResult>(CMD.RUN_AGENT_STEP_STREAM, {
+    model,
+    history,
+    onChunk: channel,
+  });
+}
+
 export function executePowershell(
   command: string,
   cwd: string | null
@@ -89,6 +106,16 @@ export function getHotkey(): Promise<string> {
 
 export function setHotkey(hotkey: string): Promise<void> {
   return invoke(CMD.SET_HOTKEY, { hotkey });
+}
+
+// CLI Credentials
+export function getCliCredentialsStatus(): Promise<CliCredentialsStatus> {
+  return invoke<CliCredentialsStatus>(CMD.GET_CLI_CREDENTIALS_STATUS);
+}
+
+// Skills
+export function listSkills(): Promise<Skill[]> {
+  return invoke<Skill[]>(CMD.LIST_SKILLS);
 }
 
 export function spotlightSubmit(
