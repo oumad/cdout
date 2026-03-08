@@ -321,18 +321,36 @@ pub async fn chat_stream(
     };
 
     let client = reqwest::Client::new();
-    let response = client.post(url)
-        .header("Authorization", format!("Bearer {}", access_token))
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream")
-        .header("User-Agent", "antigravity/1.15.8 darwin/arm64")
-        .header("X-Goog-Api-Client", "google-cloud-sdk vscode_cloudshelleditor/0.1")
-        .header("Client-Metadata", r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#)
-        .json(&full_request)
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
 
+    // Retry loop for 503 capacity errors
+    let max_retries = 3;
+    let mut response = None;
+    for attempt in 0..=max_retries {
+        let res = client.post(url)
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .header("User-Agent", "antigravity/1.15.8 darwin/arm64")
+            .header("X-Goog-Api-Client", "google-cloud-sdk vscode_cloudshelleditor/0.1")
+            .header("Client-Metadata", r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#)
+            .json(&full_request)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        if res.status().as_u16() == 503 && attempt < max_retries {
+            // Capacity exhausted — wait and retry
+            let delay_secs = 10u64 * (attempt as u64 + 1);
+            callback(format!("\n[Capacity unavailable, retrying in {}s...]\n", delay_secs));
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            continue;
+        }
+
+        response = Some(res);
+        break;
+    }
+
+    let response = response.unwrap();
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();

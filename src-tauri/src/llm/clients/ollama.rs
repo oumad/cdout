@@ -98,6 +98,7 @@ pub async fn chat_stream(
 
     let mut stream = response.bytes_stream();
     let mut full_content = String::new();
+    let mut collected_tool_calls: Vec<crate::llm::ToolCall> = Vec::new();
     let mut final_message: Option<Message> = None;
     let mut buffer = String::new();
 
@@ -117,32 +118,43 @@ pub async fn chat_stream(
 
             if let Ok(resp) = serde_json::from_str::<ChatResponse>(&line) {
                 if resp.done {
-                    // Final chunk contains the complete message with tool_calls
                     final_message = Some(resp.message);
                 } else {
+                    // Accumulate text content
                     let text = &resp.message.content;
                     if !text.is_empty() {
                         full_content.push_str(text);
                         callback(text.clone());
+                    }
+                    // Accumulate tool_calls from non-done chunks
+                    // (some models like GLM send tool_calls in a separate chunk before done)
+                    if let Some(calls) = resp.message.tool_calls {
+                        collected_tool_calls.extend(calls);
                     }
                 }
             }
         }
     }
 
-    // If we got a final message (done:true), use it — it has tool_calls
+    // Build final message: merge streamed content and tool_calls
     if let Some(mut msg) = final_message {
-        // The final message may have empty content; merge streamed content
         if msg.content.is_empty() && !full_content.is_empty() {
             msg.content = full_content;
         }
+        // Merge tool_calls: prefer final message's, fall back to collected
+        if msg.tool_calls.is_none() && !collected_tool_calls.is_empty() {
+            msg.tool_calls = Some(collected_tool_calls);
+        }
         Ok(msg)
     } else {
-        // Fallback: build message from accumulated content
         Ok(Message {
             role: "assistant".to_string(),
             content: full_content,
-            tool_calls: None,
+            tool_calls: if collected_tool_calls.is_empty() {
+                None
+            } else {
+                Some(collected_tool_calls)
+            },
         })
     }
 }
