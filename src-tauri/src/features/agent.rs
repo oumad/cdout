@@ -228,14 +228,19 @@ pub async fn run_agent_step(
         if should_nudge(&response_msg.content, &content_lower) {
             let nudge_count = current_context
                 .iter()
-                .filter(|m| m.content.contains("EXECUTE NOW"))
+                .filter(|m| m.content.contains("EXECUTE NOW") || m.content.contains("WRITE THE CODE NOW"))
                 .count();
 
             if nudge_count < MAX_NUDGE_ATTEMPTS - 1 {
                 current_context.push(response_msg);
+                let nudge_msg = if nudge_count == 0 {
+                    "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW."
+                } else {
+                    "You MUST output the actual command. If you cannot call the tool, write the command inside a ```powershell code block. Do NOT describe what you would do - WRITE THE CODE NOW."
+                };
                 current_context.push(Message {
                     role: "system".to_string(),
-                    content: "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW.".to_string(),
+                    content: nudge_msg.to_string(),
                     tool_calls: None,
                 });
                 attempts += 1;
@@ -341,14 +346,19 @@ pub async fn run_agent_step_stream(
         if should_nudge(&response_msg.content, &content_lower) {
             let nudge_count = current_context
                 .iter()
-                .filter(|m| m.content.contains("EXECUTE NOW"))
+                .filter(|m| m.content.contains("EXECUTE NOW") || m.content.contains("WRITE THE CODE NOW"))
                 .count();
 
             if nudge_count < MAX_NUDGE_ATTEMPTS - 1 {
                 current_context.push(response_msg);
+                let nudge_msg = if nudge_count == 0 {
+                    "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW."
+                } else {
+                    "You MUST output the actual command. If you cannot call the tool, write the command inside a ```powershell code block. Do NOT describe what you would do - WRITE THE CODE NOW."
+                };
                 current_context.push(Message {
                     role: "system".to_string(),
-                    content: "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW.".to_string(),
+                    content: nudge_msg.to_string(),
                     tool_calls: None,
                 });
                 attempts += 1;

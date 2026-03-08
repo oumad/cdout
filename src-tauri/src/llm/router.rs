@@ -9,8 +9,7 @@ pub async fn route_chat(
     tools: Option<Vec<ToolDefinition>>,
 ) -> Result<Message, String> {
     if model.starts_with("claude:") {
-        let creds = cli_credentials::read_claude_code_credentials()
-            .ok_or("Claude Code credentials not found. Run `claude` to log in.")?;
+        let creds = cli_credentials::get_valid_claude_code_credentials().await?;
         let model_name = model.strip_prefix("claude:").unwrap_or("claude-sonnet-4-20250514");
         anthropic::chat_anthropic_stream(model_name, history, &creds.access_token, tools, |_| {})
             .await
@@ -48,8 +47,7 @@ pub async fn route_chat_stream(
     on_chunk: impl Fn(String) + Send + 'static,
 ) -> Result<Message, String> {
     if model.starts_with("claude:") {
-        let creds = cli_credentials::read_claude_code_credentials()
-            .ok_or("Claude Code credentials not found. Run `claude` to log in.")?;
+        let creds = cli_credentials::get_valid_claude_code_credentials().await?;
         let model_name = model.strip_prefix("claude:").unwrap_or("claude-sonnet-4-20250514");
         anthropic::chat_anthropic_stream(model_name, history, &creds.access_token, tools, on_chunk)
             .await

@@ -9,7 +9,10 @@ pub async fn chat_anthropic_stream(
     tools: Option<Vec<ToolDefinition>>,
     callback: impl Fn(String) + Send + 'static,
 ) -> Result<Message, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
     // Separate system message from the rest
     let mut system_text = String::new();
@@ -27,8 +30,10 @@ pub async fn chat_anthropic_stream(
                 // Build content blocks
                 let mut content_blocks: Vec<serde_json::Value> = Vec::new();
 
-                if !msg.content.is_empty() {
-                    content_blocks.push(json!({ "type": "text", "text": msg.content }));
+                // Anthropic rejects assistant messages with trailing whitespace
+                let trimmed = msg.content.trim_end();
+                if !trimmed.is_empty() {
+                    content_blocks.push(json!({ "type": "text", "text": trimmed }));
                 }
 
                 // Convert tool_calls to tool_use blocks
@@ -103,11 +108,28 @@ pub async fn chat_anthropic_stream(
         body["tools"] = json!(tools);
     }
 
-    let res = client
+    // Detect OAuth token (sk-ant-oat-*) vs API key (sk-ant-api-*)
+    let is_oauth = access_token.contains("sk-ant-oat");
+
+    let mut req = client
         .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", access_token)
         .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+
+    if is_oauth {
+        // OAuth tokens need Bearer auth + Claude Code identity headers
+        req = req
+            .header("Authorization", format!("Bearer {}", access_token))
+            .header("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+            .header("user-agent", "claude-cli/2.1.62")
+            .header("x-app", "cli")
+            .header("anthropic-dangerous-direct-browser-access", "true");
+    } else {
+        // Standard API key auth
+        req = req.header("x-api-key", access_token);
+    }
+
+    let res = req
         .json(&body)
         .send()
         .await

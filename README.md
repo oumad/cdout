@@ -36,7 +36,7 @@ Blur/Esc → Spotlight hides
 | `llm/clients/` | LLM providers: Ollama, OpenAI, Gemini, Antigravity, Anthropic |
 | `utils/config.rs` | Config persistence in `AppData/Roaming/shuttle-io/` |
 | `auth/antigravity.rs` | OAuth2 PKCE flow for Antigravity (Google internal) |
-| `auth/cli_credentials.rs` | Claude Code + Codex CLI credential reading |
+| `auth/cli_credentials.rs` | Claude Code OAuth (read, refresh, expiry) + Codex CLI credentials |
 
 ### LLM Providers
 
@@ -44,7 +44,7 @@ Models are routed by prefix in `llm/router.rs`:
 
 | Prefix | Provider | Credentials | Streaming |
 |---|---|---|---|
-| `claude:*` | Anthropic API | Claude Code CLI (`~/.claude/.credentials.json`) | SSE |
+| `claude:*` | Anthropic API | Claude Code OAuth (`~/.claude/.credentials.json`) — auto-refreshes | SSE |
 | `codex:*` | OpenAI API | Codex CLI (`~/.codex/auth.json` or `OPENAI_API_KEY`) | SSE |
 | `antigravity` | Google Antigravity | OAuth2 PKCE login | SSE |
 | `openai:*` | OpenAI API | Manual API key in settings | SSE |
@@ -151,7 +151,7 @@ All config in `AppData/Roaming/shuttle-io/`:
 - `skills/` — User-defined skill files (override bundled by name)
 
 **Auto-detected credentials (no config needed):**
-- Claude Code: `~/.claude/.credentials.json` (run `claude` to log in)
+- Claude Code: `~/.claude/.credentials.json` (run `claude` to log in) — OAuth tokens auto-refresh
 - Codex CLI: `~/.codex/auth.json` or `OPENAI_API_KEY` env var
 
 ### Cross-Platform Notes
@@ -195,11 +195,97 @@ npm run tauri build   # production build in src-tauri/target/release/
 
 ---
 
+## OAuth Authentication
+
+Shuttle uses OAuth flows for two providers: **Anthropic** (Claude Code credentials) and **Antigravity** (Google internal). Both auto-refresh tokens when expired. The OAuth implementations are based on research from **[pi-ai](https://github.com/badlogic/pi-mono)** (`@mariozechner/pi-ai` on npm), used by [OpenClaw](https://github.com/openclaw/openclaw).
+
+### Anthropic (Claude Code Credentials)
+
+Shuttle borrows Claude Code's OAuth tokens to call the Anthropic API. This is a subscription-based auth path (Claude Pro/Max), not API key billing.
+
+**Flow:**
+1. User logs into Claude Code CLI (`claude`) — this stores OAuth tokens in `~/.claude/.credentials.json`
+2. Shuttle reads the `claudeAiOauth` object: `accessToken` (prefix `sk-ant-oat-*`), `refreshToken`, `expiresAt` (milliseconds)
+3. On each request, Shuttle checks expiry and auto-refreshes via `https://console.anthropic.com/v1/oauth/token` if needed
+4. OAuth tokens require different headers than API keys:
+
+| Header | Value | Why |
+|---|---|---|
+| `Authorization` | `Bearer <token>` | OAuth uses Bearer, not `x-api-key` |
+| `anthropic-beta` | `claude-code-20250219,oauth-2025-04-20` | Required for OAuth tokens |
+| `user-agent` | `claude-cli/2.1.62` | Claude Code identity |
+| `x-app` | `cli` | Claude Code identity |
+
+### Maintaining Auth When It Breaks
+
+The OAuth protocol details (headers, endpoints, client ID) can change. Our implementation is based on **[pi-ai](https://github.com/badlogic/pi-mono)** (`@mariozechner/pi-ai` on npm), which is used by [OpenClaw](https://github.com/openclaw/openclaw) and tracks Anthropic's OAuth changes closely.
+
+**When Claude auth breaks, check these files in pi-mono:**
+
+| What to check | File in `badlogic/pi-mono` |
+|---|---|
+| Required HTTP headers, beta flags | `packages/ai/src/providers/anthropic.ts` → `createClient()` → `isOAuthToken` branch |
+| Token refresh endpoint, client ID | `packages/ai/src/utils/oauth/anthropic.ts` → `TOKEN_URL`, `CLIENT_ID` |
+| Token format / field names | `packages/ai/src/utils/oauth/anthropic.ts` → `loginAnthropic()` return value |
+
+**Current values (update if they change):**
+- Token URL: `https://console.anthropic.com/v1/oauth/token`
+- Client ID: `9d1c250a-e61b-44d9-88ed-5944d1962f5e`
+- OAuth token prefix: `sk-ant-oat`
+- Beta header: `claude-code-20250219,oauth-2025-04-20`
+- Claude CLI version in user-agent: `2.1.62`
+
+**Quick test without the app:**
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "Authorization: Bearer <token-from-credentials-file>" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: claude-code-20250219,oauth-2025-04-20" \
+  -H "user-agent: claude-cli/2.1.62" \
+  -H "x-app: cli" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+### Antigravity (Google Internal)
+
+Shuttle has a built-in OAuth2 PKCE login flow for Antigravity (Google's internal Gemini endpoint). Unlike Anthropic, this doesn't borrow credentials from another CLI — Shuttle handles the entire login.
+
+**Flow:**
+1. User clicks "Login" in Settings → browser opens Google OAuth consent
+2. Local callback server on `localhost:51121` captures the auth code
+3. Code exchanged for tokens via `https://oauth2.googleapis.com/token`
+4. Tokens stored in `AppData/Roaming/shuttle-io/antigravity_credentials.json`
+5. Auto-refreshes on expiry (5-minute buffer) before each API call
+6. API calls go to `https://daily-cloudcode-pa.sandbox.googleapis.com/` with `Authorization: Bearer` + Claude Code-style stealth headers
+
+**Key files:**
+- `src-tauri/src/auth/antigravity.rs` — Full OAuth2 PKCE login, token refresh, credential storage
+- `src-tauri/src/llm/clients/antigravity.rs` — Antigravity API client (SSE streaming, tool calls)
+
+**Current values (update if they change):**
+- Client ID: `1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`
+- Token URL: `https://oauth2.googleapis.com/token`
+- API URL: `https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse`
+- Callback port: `51121`
+
+**When Antigravity auth breaks, check pi-mono:**
+
+| What to check | File in `badlogic/pi-mono` |
+|---|---|
+| Client ID, scopes, endpoints | `packages/ai/src/utils/oauth/google-antigravity.ts` |
+| API request format, headers | Check OpenClaw's `src/agents/` for Antigravity-specific handling |
+
+**503 "MODEL_CAPACITY_EXHAUSTED":** Shuttle auto-retries up to 3 times with increasing backoff (10s, 20s, 30s). The user sees a `[Capacity unavailable, retrying...]` message while waiting.
+
+---
+
 ## Troubleshooting
 
 - **Explorer Sync Fails**: Run as Administrator for Admin-privileged Explorer windows.
 - **Ollama Connection**: Ensure `ollama serve` is running, check URL in settings.
 - **Port 1420 in use**: Kill the existing Vite process before dev.
 - **Hotkey conflict**: Edit `hotkey` in `shuttle_config.json`.
-- **Claude Code "expired"**: Run `claude` in a terminal to refresh the OAuth session.
+- **Claude Code "expired"**: Shuttle auto-refreshes tokens. If it still fails, run `claude` in a terminal to re-authenticate, then check the maintenance section above.
+- **Claude 401/403 errors**: Headers or beta flags may have changed — check pi-ai reference above.
 - **Skills not showing**: Check that the required binary is on PATH (`where.exe <binary>`).
