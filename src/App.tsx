@@ -96,7 +96,6 @@ function SpotlightApp() {
 
   const spotlightPath = explorerState?.path || "";
   const spotlightFileCount = explorerState?.selected_files.length || 0;
-  const spotlightFolder = spotlightPath.split("\\").filter(Boolean).pop() || spotlightPath;
 
   return (
     <main className="flex flex-col h-screen text-gray-100 font-sans overflow-hidden">
@@ -113,12 +112,30 @@ function SpotlightApp() {
             autoFocus
           />
           <div className="flex flex-col items-center gap-1 text-xs text-gray-500">
-            {explorerState && (
-              <div className="flex items-center gap-1.5">
-                <FolderSync size={12} className="text-gray-600" />
-                <span>{spotlightFileCount} file{spotlightFileCount !== 1 ? "s" : ""}</span>
-                <span className="text-gray-700">·</span>
-                <span className="truncate max-w-48">{spotlightFolder}</span>
+            {explorerState && explorerState.path && (
+              <div className="flex flex-col items-center gap-0.5">
+                <div className="flex items-center gap-1.5">
+                  <FolderSync size={12} className="text-gray-600 shrink-0" />
+                  <span className="truncate max-w-96" title={spotlightPath}>{spotlightPath}</span>
+                </div>
+                {spotlightFileCount > 0 && (
+                  <div
+                    className="flex items-center gap-1 text-gray-400"
+                    title={explorerState.selected_files.join("\n")}
+                  >
+                    <File size={10} className="shrink-0 text-gray-600" />
+                    {spotlightFileCount <= 2 ? (
+                      <span className="truncate max-w-96">
+                        {explorerState.selected_files.join(", ")}
+                      </span>
+                    ) : (
+                      <span className="truncate max-w-96">
+                        {explorerState.selected_files.slice(0, 2).join(", ")}
+                        <span className="text-gray-600"> +{spotlightFileCount - 2} more</span>
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             <div className="flex items-center gap-2 text-gray-600">
