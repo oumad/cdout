@@ -9,7 +9,8 @@ use windows::Win32::UI::Shell::{
     IShellFolderViewDual, IShellWindows, IWebBrowserApp, ShellWindows,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindow, GetWindowTextW, IsWindowVisible, GW_HWNDNEXT,
+    GetClassNameW, GetDesktopWindow, GetForegroundWindow, GetWindow, GetWindowTextW,
+    IsWindowVisible, GW_CHILD, GW_HWNDNEXT,
 };
 
 #[derive(Serialize)]
@@ -73,19 +74,24 @@ fn get_window_title(hwnd: HWND) -> String {
 
 /// Find the first Explorer window in Z-order starting from (and including) the given hwnd
 /// If start_hwnd is an Explorer window, returns it. Otherwise walks down Z-order.
-fn find_explorer_window_from(start_hwnd: HWND) -> Option<(HWND, String)> {
-    // SAFETY: Walking the Z-order via GetWindow/IsWindowVisible/GetClassNameW.
+fn find_explorer_window_from(_start_hwnd: HWND) -> Option<(HWND, String)> {
+    // SAFETY: Walking the Z-order via GetDesktopWindow/GetWindow/IsWindowVisible/GetClassNameW.
     // All read-only Win32 window enumeration APIs with valid HWNDs.
+    //
+    // We start from the desktop's first child (top of the global Z-order) instead of
+    // from `start_hwnd`, because when the caller is an always-on-top window (like our
+    // spotlight), GW_HWNDNEXT stays within the topmost band and never reaches normal
+    // windows like Explorer. Starting from the desktop child traverses ALL Z-bands.
     unsafe {
-        let mut current = start_hwnd;
+        let desktop = GetDesktopWindow();
+        let mut current = GetWindow(desktop, GW_CHILD);
 
-        // Check up to 20 windows in Z-order
-        for _ in 0..20 {
+        // Walk the full Z-order (generous limit to cover busy desktops)
+        for _ in 0..200 {
             if current.0 == 0 {
                 break;
             }
 
-            // Only consider visible windows
             if IsWindowVisible(current).as_bool() {
                 let class_name = get_window_class(current);
                 if class_name == "CabinetWClass" {
@@ -94,7 +100,6 @@ fn find_explorer_window_from(start_hwnd: HWND) -> Option<(HWND, String)> {
                 }
             }
 
-            // Move to next window in Z-order
             current = GetWindow(current, GW_HWNDNEXT);
         }
 
