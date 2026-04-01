@@ -7,15 +7,31 @@ export function useModels(ollamaUrl?: string) {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
 
+  // Load persisted model on mount
+  useEffect(() => {
+    api.getSelectedModel().then((saved) => {
+      if (saved) setModelName(saved);
+    }).catch(() => {});
+  }, []);
+
   const fetchModels = useCallback(async () => {
     try {
       const models = await api.getOllamaModels();
       setAvailableModels(models);
       setOllamaConnected(true);
+      // Only default to first model if no saved model was loaded and current is empty
       setModelName((prev) => (models.length > 0 && !prev ? models[0] : prev));
     } catch {
       setOllamaConnected(false);
       setAvailableModels([]);
+    }
+  }, []);
+
+  // Persist model selection on change
+  const setModelNameAndSave = useCallback((model: string) => {
+    setModelName(model);
+    if (model) {
+      api.setSelectedModel(model).catch(() => {});
     }
   }, []);
 
@@ -34,7 +50,7 @@ export function useModels(ollamaUrl?: string) {
 
   return {
     modelName,
-    setModelName,
+    setModelName: setModelNameAndSave,
     availableModels,
     ollamaConnected,
     setOllamaConnected,
