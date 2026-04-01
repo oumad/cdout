@@ -33,6 +33,8 @@ export const CMD = {
   GET_OLLAMA_MODELS: "get_ollama_models",
   GET_OLLAMA_URL: "get_ollama_url",
   SET_OLLAMA_URL: "set_ollama_url",
+  GET_SELECTED_MODEL: "get_selected_model",
+  SET_SELECTED_MODEL: "set_selected_model",
   LOGIN_ANTIGRAVITY: "login_antigravity",
   GET_ANTIGRAVITY_STATUS: "get_antigravity_status",
   SET_OPENAI_KEY: "set_openai_key",

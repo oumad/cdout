@@ -32,6 +32,14 @@ export function setOllamaUrl(url: string): Promise<void> {
   return invoke(CMD.SET_OLLAMA_URL, { url });
 }
 
+export function getSelectedModel(): Promise<string | null> {
+  return invoke<string | null>(CMD.GET_SELECTED_MODEL);
+}
+
+export function setSelectedModel(model: string): Promise<void> {
+  return invoke(CMD.SET_SELECTED_MODEL, { model });
+}
+
 // Auth
 export function loginAntigravity(): Promise<string> {
   return invoke<string>(CMD.LOGIN_ANTIGRAVITY);

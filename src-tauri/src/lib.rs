@@ -79,6 +79,16 @@ fn set_ollama_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_selected_model() -> Result<Option<String>, String> {
+    Ok(config::get_selected_model())
+}
+
+#[tauri::command]
+fn set_selected_model(model: String) -> Result<(), String> {
+    config::set_selected_model(model)
+}
+
+#[tauri::command]
 async fn login_antigravity() -> Result<String, String> {
     antigravity::perform_login()
         .await
@@ -271,6 +281,8 @@ pub fn run() {
             get_ollama_models,
             get_ollama_url,
             set_ollama_url,
+            get_selected_model,
+            set_selected_model,
             login_antigravity,
             get_antigravity_status,
             set_openai_key,

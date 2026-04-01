@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub ollama_url: String,
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
+    #[serde(default)]
+    pub selected_model: Option<String>,
 }
 
 fn default_ollama_url() -> String {
@@ -42,6 +44,7 @@ fn load_config() -> AppConfig {
     AppConfig {
         ollama_url: DEFAULT_OLLAMA_URL.to_string(),
         hotkey: DEFAULT_HOTKEY.to_string(),
+        selected_model: None,
     }
 }
 
@@ -79,6 +82,16 @@ pub fn get_hotkey() -> String {
 pub fn set_hotkey(hotkey: String) -> Result<(), String> {
     let mut config = load_config();
     config.hotkey = hotkey;
+    save_config(&config)
+}
+
+pub fn get_selected_model() -> Option<String> {
+    load_config().selected_model
+}
+
+pub fn set_selected_model(model: String) -> Result<(), String> {
+    let mut config = load_config();
+    config.selected_model = Some(model);
     save_config(&config)
 }
 
