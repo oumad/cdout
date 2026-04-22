@@ -1,7 +1,8 @@
 use crate::auth::antigravity as antigravity_auth;
+use crate::llm::stream_util::{next_chunk_with_timeout, STREAM_IDLE_TIMEOUT};
 use crate::llm::{Message, ToolDefinition};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::pin::pin;
 
 const DEFAULT_PROJECT_ID: &str = "rising-fact-p41fc"; // Fallback
 
@@ -357,14 +358,13 @@ pub async fn chat_stream(
         return Err(format!("Antigravity API Error ({}): {}", status, text));
     }
 
-    let mut stream = response.bytes_stream();
+    let mut stream = pin!(response.bytes_stream());
     let mut full_content = String::new();
     let mut extracted_tool_calls = Vec::new();
 
-    // Simple SSE parser
+    // Simple SSE parser with per-chunk idle timeout
     let mut buffer = String::new();
-    while let Some(item) = stream.next().await {
-        let chunk = item.map_err(|e| format!("Stream error: {}", e))?;
+    while let Some(chunk) = next_chunk_with_timeout(&mut stream, STREAM_IDLE_TIMEOUT).await? {
         let s = String::from_utf8_lossy(&chunk);
         buffer.push_str(&s);
 
@@ -394,6 +394,7 @@ pub async fn chat_stream(
                                             if let Some(fc) = &part.function_call {
                                                 // Convert GeminiFunctionCall to ToolCall
                                                 extracted_tool_calls.push(crate::llm::ToolCall {
+                                                    id: None,
                                                     function: crate::llm::FunctionCall {
                                                         name: fc.name.clone(),
                                                         arguments: fc.args.clone(),

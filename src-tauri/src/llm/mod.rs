@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub mod clients;
 pub mod router;
+pub mod stream_util;
 
 // Streaming types for Tauri Channel
 #[derive(Serialize, Clone)]
@@ -23,6 +24,8 @@ pub struct Message {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ToolCall {
+    #[serde(default)]
+    pub id: Option<String>,
     pub function: FunctionCall,
 }
 

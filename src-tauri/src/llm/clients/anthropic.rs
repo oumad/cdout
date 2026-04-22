@@ -1,6 +1,7 @@
+use crate::llm::stream_util::{next_chunk_with_timeout, STREAM_IDLE_TIMEOUT};
 use crate::llm::{FunctionCall, Message, ToolCall, ToolDefinition};
-use futures_util::StreamExt;
 use serde_json::json;
+use std::pin::pin;
 
 pub async fn chat_anthropic_stream(
     model: &str,
@@ -39,9 +40,13 @@ pub async fn chat_anthropic_stream(
                 // Convert tool_calls to tool_use blocks
                 if let Some(tool_calls) = &msg.tool_calls {
                     for (i, tc) in tool_calls.iter().enumerate() {
+                        let tool_id = tc
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("toolu_{}", i));
                         content_blocks.push(json!({
                             "type": "tool_use",
-                            "id": format!("toolu_{}", i),
+                            "id": tool_id,
                             "name": tc.function.name,
                             "input": tc.function.arguments
                         }));
@@ -58,9 +63,15 @@ pub async fn chat_anthropic_stream(
                 }));
             }
             "tool" => {
-                // Tool results — need to find the preceding tool_use id
-                // Use a simple heuristic: look back for the last assistant message's tool_use
-                let tool_use_id = find_last_tool_use_id(&api_messages);
+                // Tool results — correlate with the preceding tool_use id.
+                // If the message carries a tool_call with an id, use it directly.
+                // Otherwise fall back to scanning the last assistant message.
+                let tool_use_id = msg
+                    .tool_calls
+                    .as_ref()
+                    .and_then(|tc| tc.first())
+                    .and_then(|tc| tc.id.clone())
+                    .unwrap_or_else(|| find_last_tool_use_id(&api_messages));
                 api_messages.push(json!({
                     "role": "user",
                     "content": [{
@@ -101,7 +112,13 @@ pub async fn chat_anthropic_stream(
     });
 
     if !system_text.is_empty() {
-        body["system"] = json!(system_text);
+        // Use structured system prompt with cache_control for Anthropic prompt caching.
+        // The system prompt is stable across turns, so caching saves tokens on multi-turn conversations.
+        body["system"] = json!([{
+            "type": "text",
+            "text": system_text,
+            "cache_control": { "type": "ephemeral" }
+        }]);
     }
 
     if let Some(tools) = api_tools {
@@ -120,13 +137,18 @@ pub async fn chat_anthropic_stream(
         // OAuth tokens need Bearer auth + Claude Code identity headers
         req = req
             .header("Authorization", format!("Bearer {}", access_token))
-            .header("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+            .header(
+                "anthropic-beta",
+                "claude-code-20250219,oauth-2025-04-20,prompt-caching-2024-07-31",
+            )
             .header("user-agent", "claude-cli/2.1.62")
             .header("x-app", "cli")
             .header("anthropic-dangerous-direct-browser-access", "true");
     } else {
         // Standard API key auth
-        req = req.header("x-api-key", access_token);
+        req = req
+            .header("x-api-key", access_token)
+            .header("anthropic-beta", "prompt-caching-2024-07-31");
     }
 
     let res = req
@@ -146,7 +168,7 @@ pub async fn chat_anthropic_stream(
         return Err(format!("Anthropic API Error ({}): {}", status, text));
     }
 
-    let mut stream = res.bytes_stream();
+    let mut stream = pin!(res.bytes_stream());
     let mut full_content = String::new();
     let mut buffer = String::new();
 
@@ -156,8 +178,7 @@ pub async fn chat_anthropic_stream(
     let mut current_tool_input = String::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
-    while let Some(item) = stream.next().await {
-        let chunk = item.map_err(|e| format!("Stream error: {}", e))?;
+    while let Some(chunk) = next_chunk_with_timeout(&mut stream, STREAM_IDLE_TIMEOUT).await? {
         let s = String::from_utf8_lossy(&chunk);
         buffer.push_str(&s);
 
@@ -220,13 +241,14 @@ pub async fn chat_anthropic_stream(
                         }
                         "content_block_stop" => {
                             // Finalize tool call if we were building one
-                            if let (Some(_id), Some(name)) =
+                            if let (Some(id), Some(name)) =
                                 (current_tool_id.take(), current_tool_name.take())
                             {
                                 let arguments: serde_json::Value =
                                     serde_json::from_str(&current_tool_input)
                                         .unwrap_or(json!({}));
                                 tool_calls.push(ToolCall {
+                                    id: Some(id),
                                     function: FunctionCall { name, arguments },
                                 });
                                 current_tool_input.clear();

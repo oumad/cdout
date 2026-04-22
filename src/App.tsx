@@ -381,8 +381,15 @@ function MainApp() {
         return;
       }
 
-      if (result.response.type === "CommandProposal") {
-        const cmd = result.response.content;
+      // Extract command from either CommandProposal (string) or ToolProposals (array)
+      const isProposal = result.response.type === "CommandProposal" || result.response.type === "ToolProposals";
+      const cmd = isProposal
+        ? (result.response.type === "ToolProposals"
+            ? (result.response.content as import("./types").ToolProposal[])[0]?.command
+            : result.response.content as string)
+        : null;
+
+      if (isProposal && cmd) {
         autoStepCount.current++;
         if (shouldAutoExecute && autoStepCount.current < MAX_AUTO_STEPS) {
           setIsExecuting(true);
@@ -409,7 +416,8 @@ function MainApp() {
         setPendingCommand(null);
 
         if (shouldAutoExecute) {
-          const taskDone = isTaskComplete(result.response.content);
+          const responseText = typeof result.response.content === "string" ? result.response.content : "";
+          const taskDone = isTaskComplete(responseText);
 
           if (!taskDone && autoStepCount.current < MAX_AUTO_STEPS) {
             autoStepCount.current++;

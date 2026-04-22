@@ -2,6 +2,7 @@ mod auth;
 mod constants;
 mod features;
 mod llm;
+mod tools;
 mod utils;
 
 use auth::antigravity;
@@ -178,7 +179,15 @@ async fn run_agent_step_stream(
 
 #[tauri::command]
 async fn execute_powershell(command: String, cwd: Option<String>) -> Result<String, String> {
-    Ok(agent::run_powershell_command(&command, cwd.as_deref()))
+    let registry = tools::build_default_registry();
+    let args = serde_json::json!({ "command": command });
+    let result = registry.validate_and_execute("run_powershell", &args, cwd.as_deref())?;
+    if result.is_error {
+        // Still return the output (contains stderr/exit code), but prefix so the LLM sees the failure
+        Ok(result.output)
+    } else {
+        Ok(result.output)
+    }
 }
 
 #[tauri::command]
