@@ -11,6 +11,7 @@ export interface ToolCallFunction {
 }
 
 export interface ToolCall {
+  id?: string;
   function: ToolCallFunction;
 }
 
@@ -20,9 +21,15 @@ export interface Message {
   tool_calls?: ToolCall[];
 }
 
+export interface ToolProposal {
+  tool_name: string;
+  command: string;
+  tool_call_id?: string;
+}
+
 export interface AgentResponse {
-  type: "Text" | "CommandProposal";
-  content: string;
+  type: "Text" | "CommandProposal" | "ToolProposals";
+  content: string | ToolProposal[];
 }
 
 export interface AgentStepResult {

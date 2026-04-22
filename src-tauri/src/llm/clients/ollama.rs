@@ -1,6 +1,7 @@
+use crate::llm::stream_util::{next_chunk_with_timeout, STREAM_IDLE_TIMEOUT};
 use crate::llm::{Message, ToolDefinition};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::pin::pin;
 
 #[derive(Serialize, Debug)]
 pub struct ChatRequest {
@@ -96,14 +97,13 @@ pub async fn chat_stream(
         return Err(format!("Ollama API Error ({}): {}", status, error_text));
     }
 
-    let mut stream = response.bytes_stream();
+    let mut stream = pin!(response.bytes_stream());
     let mut full_content = String::new();
     let mut collected_tool_calls: Vec<crate::llm::ToolCall> = Vec::new();
     let mut final_message: Option<Message> = None;
     let mut buffer = String::new();
 
-    while let Some(item) = stream.next().await {
-        let chunk = item.map_err(|e| format!("Stream error: {}", e))?;
+    while let Some(chunk) = next_chunk_with_timeout(&mut stream, STREAM_IDLE_TIMEOUT).await? {
         let s = String::from_utf8_lossy(&chunk);
         buffer.push_str(&s);
 
