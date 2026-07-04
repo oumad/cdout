@@ -1,291 +1,348 @@
-# Shuttle.io
+# shuttle-io
 
-Context-aware AI assistant that integrates with Windows Explorer. Select files in Explorer, describe what you want, and an LLM proposes PowerShell commands for your approval.
+A Windows-native AI assistant. Press a global hotkey, type "rename my photos by
+date" while files are selected in Explorer, and an LLM proposes a PowerShell
+command for one-click approval.
 
-Built with [Tauri v2](https://v2.tauri.app/), React 19, TypeScript, and Rust.
+Built with **Tauri v2 + React 19 + Rust**. Two windows: a small spotlight (600×260,
+hotkey-triggered) and a main conversation window (collapsible sessions sidebar
+on the left, like Claude.ai).
+
+---
+
+## Quick start
+
+### Run from source
+
+```powershell
+# from repo root
+npm install
+npm run tauri dev
+```
+
+### Run the test suites
+
+```powershell
+# backend (Rust)
+cd src-tauri
+cargo test --lib
+
+# frontend (TypeScript / React)
+cd ..
+npm test
+```
+
+### Configure providers
+
+After first launch:
+
+1. **OpenRouter (recommended)** — one key for ~400 models (Claude Opus 4.7,
+   GPT-5, Gemini 3, Llama 4, etc.). Get a key at
+   [openrouter.ai/keys](https://openrouter.ai/keys), paste it into Settings →
+   Providers → "OpenRouter API Key". Save.
+2. **Ollama (optional, local)** — if `ollama serve` is running on
+   `localhost:11434`, your local models appear under "Local (Ollama)" in the
+   picker. Change the URL in Settings if Ollama lives elsewhere.
+3. **Anthropic direct (optional, for prompt caching)** — OpenRouter's
+   OpenAI-compatible wire drops `cache_control` markers; if you want the 5–10×
+   cost reduction from Anthropic's caching, paste an Anthropic API key in
+   Settings as well. Models prefixed `anthropic:` then route directly.
+
+---
+
+## What it does
+
+- **Spotlight prompt** — global hotkey (default `Ctrl+Alt+A`) opens a small
+  command palette over any window. Type a request, hit Enter, the main window
+  spawns/foregrounds and runs the agent in a fresh session.
+- **Explorer-aware** — the agent sees the current Explorer window's path and
+  selected files (via Windows COM). Prompts like "rename these" need no
+  filename input.
+- **PowerShell tool** — the single execution surface. Every proposed command
+  is editable before approval. Output is fed back to the LLM for the next
+  step.
+- **Ask-user tool** — when the request is ambiguous (rename pattern, output
+  format, overwrite vs new file), the model can call `ask_user_question` and
+  shuttle-io renders a multiple-choice picker.
+- **Sessions sidebar** — every spotlight prompt becomes a persistent session
+  (auto-saved to `%APPDATA%\shuttle-io\sessions\<id>.json`). The sidebar on
+  the left lists past chats by recency. Click to resume; rename or delete on
+  hover.
+- **Loop detection** — three patterns (exact-repeat, ping-pong, no-progress)
+  with escalation Warning → Block → Break. Block pauses auto-execute; Break
+  also drops tool definitions from the next request so the model is forced
+  into a text-only reassessment.
+- **Skills** — `*.md` files in `src-tauri/skills/` (bundled) or
+  `%APPDATA%\shuttle-io\skills\` (user) get injected into the system prompt.
+  User-supplied skills are scanned for unsafe patterns and quarantined if
+  flagged.
 
 ---
 
 ## Architecture
 
-### Two-Window Design
+### Backend (Rust — `src-tauri/src/`)
 
-Both windows load the same React app (`src/App.tsx`). React routes by `getCurrentWindow().label`:
+| File | Purpose |
+|------|---------|
+| `lib.rs` | Tauri command registration, tray, global shortcut, window lifecycle |
+| `constants.rs` | Backend tunables (`MAX_OUTPUT_LEN`, `TOOL_NAME`, `COMPLETION_KEYWORDS`) |
+| `llm/router.rs` | Three-branch dispatch: `ollama:*` → ollama, `anthropic:*` → direct Anthropic, else → OpenRouter |
+| `llm/retry.rs` | Error classifier (`BusinessQuota` / `ContextWindowExceeded` / `EmptyCompletion` / `TransientRetryable` / `Terminal`) + retry wrapper with exp backoff + jitter |
+| `llm/history.rs` | Context-overflow recovery: trim ladder (`fast_trim_tool_results` → `emergency_history_trim`) + orphan reconciliation |
+| `llm/stream_util.rs` | Per-chunk 60s idle timeout + global cancel-flag check |
+| `llm/mod.rs` | `Message`, `ToolCall`, `ToolDefinition`, `StreamChunk` types |
+| `llm/clients/ollama.rs` | Local Ollama client (streaming, NDJSON) |
+| `llm/clients/anthropic.rs` | Direct Anthropic API-key client (prompt caching + `compact-2026-01-12` beta for 4.6+ models) |
+| `llm/clients/openrouter.rs` | OpenAI-compatible OpenRouter client. Pins `allow_fallbacks: false`, `quantizations: ["fp8","bf16","fp16"]`, `data_collection: "deny"` on every request |
+| `features/agent.rs` | Agent loop, tool-proposal extraction (native `tool_calls` first, code-block + raw-text fallbacks), context-overflow recovery |
+| `features/loop_detector.rs` | Process-wide singleton. Three patterns + four-state escalation. Pattern-keyed `warning_seen` so no-progress can reach Block/Break |
+| `features/prompts.rs` | `PromptSection` trait, `sends_native_tool_specs` flag (`false` for `ollama:*` to get the longer prose tool catalog) |
+| `features/skills.rs` | YAML-frontmatter `.md` loader, safety scanner with quarantine, `LoadedSkills { skills, quarantined }` return type |
+| `features/sessions.rs` | Per-session JSON files in `%APPDATA%\shuttle-io\sessions\` |
+| `features/explorer.rs` | Windows COM bridge to active Explorer window (`IShellWindows`) |
+| `tools/mod.rs` | `Tool` trait, `ToolRegistry`, `validate_and_execute` |
+| `tools/powershell.rs` | The PowerShell exec tool. Tracks PID for kill, truncates output |
+| `tools/ask_user_question.rs` | The multi-choice clarification tool (validated client-side, never executed server-side) |
+| `utils/config.rs` | `AppConfig` + `ApiKeys` (`{openrouter, anthropic}`) persistence |
+| `utils/cancel.rs` | Global `OnceLock<AtomicBool>` cancel flag (single concurrent loop by design) |
 
-- **Spotlight** (`spotlight`): Small transparent borderless input card. Always-on-top, hidden by default. Summoned by global hotkey (`Ctrl+Alt+A`), centered on the cursor's monitor.
-- **Main** (`main`): Full conversation UI with chat, command proposals, settings. Opened when spotlight submits a prompt, or from the system tray.
+### Frontend (TypeScript / React — `src/`)
+
+| File / dir | Purpose |
+|------------|---------|
+| `App.tsx` | `SpotlightApp` + `MainApp`, routed by `getCurrentWindow().label` |
+| `types/index.ts` | All cross-IPC types |
+| `constants.ts` | Tauri command names, event names, magic numbers |
+| `utils/tauri.ts` | Typed wrappers around every `invoke()` call (no raw invokes in components) |
+| `utils/agent.ts` | `isTaskComplete` text-pattern check |
+| `hooks/useModels.ts` | Model list reconciliation. On stale-slug detection, prefers `anthropic/*` → `openai/*` → `google/*` → `ollama:*` and toasts the swap |
+| `hooks/useExplorer.ts` | Explorer state sync |
+| `hooks/useError.ts` | Auto-dismissing error toast state |
+| `hooks/useSessions.ts` | Session CRUD + debounced auto-save (500ms) |
+| `components/SessionsSidebar.tsx` | Collapsible left sidebar with "New chat", session list, rename, delete |
+| `components/ChatMessage.tsx` | Renders user / assistant / tool messages. Renders `synthetic: true` messages as a "shuttle internal" gray note (not as user input) |
+| `components/CommandApproval.tsx` | Editable PowerShell proposal with Approve / Approve-all / Reject-with-feedback / Dismiss |
+| `components/QuestionApproval.tsx` | Radio/checkbox UI for `ask_user_question` with an "Other (free text)" fallback |
+| `components/ModelSelector.tsx` | Provider-grouped `<optgroup>` (`Local (Ollama)` / `Anthropic (direct · cached)` / `OpenRouter`) |
+| `components/MigrationBanner.tsx` | One-shot banner shown when legacy CLI/Antigravity/openai/gemini creds are detected. "Clean up legacy creds" button calls `cleanup_legacy_credentials` |
+| `components/SettingsPage.tsx` | OpenRouter + Anthropic key fields (masked previews, never plaintext to renderer state), Ollama URL, free-tier toggle, quarantined-skill viewer |
+
+### Data flow — one agent turn
 
 ```
-Hotkey → Spotlight appears → User types + Enter → Spotlight hides, Main opens with conversation
-Tray click → Main opens
-Close Main → Hides to tray
-Blur/Esc → Spotlight hides
+SpotlightApp                  Backend                        MainApp
+─────────────                ─────────                       ────────
+User types prompt
+clicks Enter ───spotlight_submit──▶ persists prompt + model
+                                    emits SPOTLIGHT_SUBMITTED ▶ listener:
+                                                                  1) flush prior save
+                                                                  2) hardResetSessionUi (cancel stream, clear UI)
+                                                                  3) newSession (creates + loads)
+                                                                  4) runAgentStep
+                                                                ◀ run_agent_step_stream
+                                    router::route_chat_stream
+                                    classifier wraps errors
+                                    LoopDetector records proposal
+                                    AgentStepResult ───────────▶ frontend renders
+                                                                  proposal → CommandApproval
+                                                                  question → QuestionApproval
+                                                                  text     → ChatMessage
+
+                                                                User approves command
+                                                                ────execute_powershell────▶ PowerShell, capture output,
+                                                                                            record outcome in LoopDetector
+                                                                ◀── tool_result
+                                                                runAgentStep (next turn)
+                                                                ...
 ```
 
-### Backend (`src-tauri/src/`)
+---
 
-| Module | Purpose |
-|---|---|
-| `lib.rs` | Command registration, window/tray/hotkey setup, `center_on_cursor_monitor()` |
-| `features/agent.rs` | Agent loop (blocking + streaming), nudge logic, PowerShell execution |
-| `features/prompts.rs` | System prompt template with skills injection |
-| `features/skills.rs` | SKILL.md parsing, binary detection, prompt section generation |
-| `features/explorer.rs` | Windows Explorer COM integration — **only OS-specific module** |
-| `llm/mod.rs` | Shared types: `Message`, `ToolCall`, `StreamChunk` |
-| `llm/router.rs` | Model routing (`route_chat` + `route_chat_stream`) by prefix |
-| `llm/clients/` | LLM providers: Ollama, OpenAI, Gemini, Antigravity, Anthropic |
-| `utils/config.rs` | Config persistence in `AppData/Roaming/shuttle-io/` |
-| `auth/antigravity.rs` | OAuth2 PKCE flow for Antigravity (Google internal) |
-| `auth/cli_credentials.rs` | Claude Code OAuth (read, refresh, expiry) + Codex CLI credentials |
+## Loop detection & recovery semantics
 
-### LLM Providers
+- **Exact-repeat** — same canonical `(tool_name, args)` fingerprint 3× in last
+  6 turns → escalates.
+- **Ping-pong** — two distinct fingerprints alternating 3× → escalates.
+- **No-progress** — same tool called 4× with at least 4 recorded failures and
+  zero successes → escalates. Pattern-keyed escalation so drifting args still
+  reach Block/Break.
 
-Models are routed by prefix in `llm/router.rs`:
+States: `Ok` → `Warning` (model nudged, auto-execute continues) → `Block`
+(auto-execute pauses, user must approve next command) → `Break` (auto-execute
+pauses AND next request drops tool definitions, forcing text-only
+reassessment).
 
-| Prefix | Provider | Credentials | Streaming |
-|---|---|---|---|
-| `claude:*` | Anthropic API | Claude Code OAuth (`~/.claude/.credentials.json`) — auto-refreshes | SSE |
-| `codex:*` | OpenAI API | Codex CLI (`~/.codex/auth.json` or `OPENAI_API_KEY`) | SSE |
-| `antigravity` | Google Antigravity | OAuth2 PKCE login | SSE |
-| `openai:*` | OpenAI API | Manual API key in settings | SSE |
-| `gemini:*` | Google Gemini | Manual API key in settings | SSE |
-| *(default)* | Ollama (local) | None (local server) | NDJSON |
+Context overflow is handled separately by the retry classifier — see
+`llm/history.rs`. The trim ladder is:
+`fast_trim_tool_results` → `emergency_history_trim` →
+`remove_orphaned_tool_messages` (4 passes; Pass 3 drops empty-assistant
+messages so Anthropic doesn't 400 on them).
 
-All providers stream responses in real-time via `tauri::ipc::Channel<StreamChunk>`.
+---
 
-### Skills System
+## Skills
 
-Markdown files with YAML frontmatter that inject domain knowledge into the system prompt when tools are available on the system.
+`.md` files with YAML frontmatter:
 
 ```yaml
 ---
 name: ffmpeg
-description: Video and audio processing with FFmpeg
+description: Video processing toolkit
 requires:
-  bins: [ffmpeg]          # ALL must be on PATH
-  anyBins: [magick, convert]  # At least ONE on PATH (optional)
+  bins: [ffmpeg]
 ---
-# Markdown body injected into system prompt
+
+Use `ffmpeg -i input.mp4 -vf scale=1280:720 out.mp4` to resize.
 ```
 
-**Locations:**
-- `src-tauri/skills/` — bundled with the app (ffmpeg, oiiotool, imagemagick)
-- `AppData/Roaming/shuttle-io/skills/` — user-defined (overrides bundled by name)
+- **Bundled** skills live in `src-tauri/skills/` and ship with the binary.
+  They are trusted — NOT run through the safety scanner. Treat any PR that
+  adds a bundled skill as a security review.
+- **User** skills live in `%APPDATA%\shuttle-io\skills\` and ARE scanned. Hits
+  on prompt-injection wording (`ignore previous instructions`,
+  `<system>`, `you are now`), destructive shell (`rm -rf /`, `chmod 777`,
+  `format c:`, `dd if=/dev/zero`), or pipe-to-shell (`curl ... | sh`,
+  `wget ... | bash`) → the skill is quarantined and NOT injected into the
+  prompt. Settings → Skills shows the quarantined list with hit details.
 
-Skills are checked at conversation init. Available skills appear in the settings panel.
-
-### Agent Flow
-
-1. User prompt + Explorer context (path, selected files) → system prompt constructed with skills
-2. LLM streams response in real-time via `StreamChunk::TextDelta`
-3. Tool calls or markdown code blocks become command proposals — user approves/edits/rejects
-4. PowerShell output fed back to LLM → loop continues
-5. Auto-execute mode runs proposals automatically (capped at 10 steps)
-6. Nudge loop retries up to 3x if LLM doesn't use tool calls. Fallback extracts commands from markdown code blocks.
-7. Output truncated to 2000 chars to prevent token overflow.
+Bundled skills currently: `ffmpeg`, `oiiotool`, `imagemagick`, `exiftool`.
 
 ---
 
-## Guide for Agents & Developers
+## Provider routing
 
-### Key Files
-
-| File | Purpose |
-|---|---|
-| `src/App.tsx` | All frontend — `SpotlightApp` (lightweight input) + `MainApp` (full UI) |
-| `src/types/index.ts` | Shared TypeScript types |
-| `src/constants.ts` | All magic values (timings, limits, command names, events) |
-| `src/utils/tauri.ts` | Typed Tauri invoke wrappers (no raw `invoke()` in components) |
-| `src/hooks/` | Custom hooks: `useModels`, `useExplorer`, `useError` |
-| `src/components/` | UI components: ChatMessage, CommandApproval, ChatInput, ModelSelector, TitleBar, ErrorToast |
-| `src-tauri/src/lib.rs` | Command registration, window/tray/hotkey setup |
-| `src-tauri/src/features/agent.rs` | Agent orchestration (blocking + streaming) |
-| `src-tauri/src/features/prompts.rs` | System prompt template with skills injection |
-| `src-tauri/src/features/skills.rs` | SKILL.md loading, binary checks, prompt generation |
-| `src-tauri/src/features/explorer.rs` | Windows Explorer COM integration |
-| `src-tauri/src/llm/router.rs` | Model routing (`route_chat` + `route_chat_stream`) |
-| `src-tauri/src/llm/clients/` | LLM clients: ollama, openai, gemini, antigravity, anthropic |
-| `src-tauri/src/auth/cli_credentials.rs` | Claude Code + Codex CLI credential reading |
-| `src-tauri/src/auth/antigravity.rs` | OAuth2 PKCE flow for Antigravity |
-| `src-tauri/src/utils/config.rs` | Config management |
-| `src-tauri/skills/*.md` | Bundled skill definitions (ffmpeg, oiiotool, imagemagick) |
-
-### Tauri IPC Commands
-
-Defined in `src-tauri/src/lib.rs`:
-
-**Explorer:**
-- `get_explorer_status` → `{ path, selected_files }`
-- `get_explorer_debug` → debug info for all Explorer windows
-
-**Agent:**
-- `init_agent_conversation(context_path, selected_files, user_prompt)` → `Vec<Message>` (loads skills, builds system prompt)
-- `run_agent_step(model, history)` → `AgentStepResult` (blocking, no streaming)
-- `run_agent_step_stream(model, history, on_chunk)` → `AgentStepResult` (streams `StreamChunk` via Tauri Channel)
-- `execute_powershell(command, cwd)` → output string (only after user approval)
-
-**Window Management:**
-- `spotlight_submit(prompt, model)` → hides spotlight, shows main, emits `spotlight-submitted` event
-
-**Models & Config:**
-- `get_ollama_models` / `get_ollama_url` / `set_ollama_url`
-- `get_api_keys` / `set_openai_key` / `set_gemini_key`
-- `get_hotkey` / `set_hotkey`
-- `login_antigravity` / `get_antigravity_status`
-- `get_cli_credentials_status` → `{ claude_code: bool, codex: bool }`
-- `list_skills` → `Vec<Skill>` (all loaded skills with availability status)
-
-**Utility:**
-- `write_file_list(files)` → temp file path (for large selections >20 files)
-
-### Events (Rust → JS)
-
-- `spotlight-submitted` → `{ prompt, model }` — main window listens for this to start a conversation from spotlight input
-
-### Configuration
-
-All config in `AppData/Roaming/shuttle-io/`:
-- `shuttle_config.json` — Ollama URL, hotkey (default `Ctrl+Alt+A`)
-- `api_keys.json` — OpenAI/Gemini API keys
-- `antigravity_credentials.json` — OAuth tokens
-- `skills/` — User-defined skill files (override bundled by name)
-
-**Auto-detected credentials (no config needed):**
-- Claude Code: `~/.claude/.credentials.json` (run `claude` to log in) — OAuth tokens auto-refresh
-- Codex CLI: `~/.codex/auth.json` or `OPENAI_API_KEY` env var
-
-### Cross-Platform Notes
-
-Window positioning uses Tauri's cross-platform `cursor_position()` and `available_monitors()` APIs. `features/explorer.rs` is the only Windows-specific module (COM via `windows` crate). Porting to another OS means replacing that single module.
-
-### Adding Custom Skills
-
-Create a `.md` file in `AppData/Roaming/shuttle-io/skills/`:
-
-```yaml
----
-name: my-tool
-description: What this tool does
-requires:
-  bins: [my-tool]
----
-You have **my-tool** available. Use it for:
-- **Operation**: `my-tool --flag input output`
+```
+model id pattern              dispatch                        rationale
+─────────────────             ────────                        ─────────
+ollama:llama3                 ollama (localhost)              local, private, free
+anthropic:claude-opus-4-7     direct Anthropic API            prompt caching works
+anthropic/claude-opus-4.7     OpenRouter                      same model, no caching
+openai/gpt-5                  OpenRouter
+google/gemini-3-pro-preview   OpenRouter
+anything else                 OpenRouter (default)
 ```
 
-The skill body is injected into the system prompt when all required binaries are found on PATH. Use `bins` for ALL-required and `anyBins` for ANY-of-these-required.
+`route_provider` strips an optional inner `anthropic/` prefix from
+`anthropic:` so `anthropic:anthropic/claude-opus-4-7` also works.
 
 ---
 
-## Getting Started
+## Configuration files
 
-**Prerequisites**: Node.js v20+, Rust (stable), Ollama (optional)
+| Path | Purpose |
+|------|---------|
+| `%APPDATA%\shuttle-io\shuttle_config.json` | Ollama URL, hotkey, selected model, `show_free_openrouter_models`, `openrouter_disclosure_ack` |
+| `%APPDATA%\shuttle-io\api_keys.json` | `{ openrouter, anthropic }` plaintext (server-side only — never returned to renderer; masked `…3fa1` preview is sent instead) |
+| `%APPDATA%\shuttle-io\sessions\<id>.json` | One file per session — meta + full message history. Sidebar parses meta only |
+| `%APPDATA%\shuttle-io\skills\*.md` | User-supplied skills (scanned + quarantined as needed) |
 
-```bash
-npm install
-npm run tauri dev     # dev server on port 1420
-npm run tauri build   # production build in src-tauri/target/release/
+---
+
+## Tauri commands (IPC surface)
+
+| Command | Returns | Notes |
+|---------|---------|-------|
+| `get_explorer_status` | `ExplorerState` | Path + selected files of active Explorer window |
+| `get_explorer_debug` | `ExplorerDebugInfo` | For diagnosing Explorer detection |
+| `get_ollama_models` | `Vec<String>` | All available model slugs, prefixed by provider |
+| `get_ollama_url` / `set_ollama_url` | | |
+| `get_selected_model` / `set_selected_model` | | |
+| `set_openrouter_key` | | Plaintext input, server-side stored |
+| `set_anthropic_key` | | |
+| `get_api_keys` | `MaskedApiKeys` | `{ openrouter_set, openrouter_preview, anthropic_set, anthropic_preview }` — preview = last 4 chars |
+| `get_show_free_openrouter_models` / `set_show_free_openrouter_models` | | Free tier hidden by default (FP4 quantization risk) |
+| `get_openrouter_disclosure_ack` / `set_openrouter_disclosure_ack` | | One-shot migration banner ack |
+| `has_legacy_credentials` | `bool` | Detects + auto-purges legacy `openai`/`gemini` fields from `api_keys.json` |
+| `cleanup_legacy_credentials` | | Removes shuttle-io's antigravity creds always; third-party CLI files only when `removeThirdParty: true` |
+| `get_hotkey` / `set_hotkey` | | |
+| `init_agent_conversation` | `Vec<Message>` | Builds the system + initial user message. Takes optional `model` to switch native-tool-specs flag |
+| `list_sessions` | `Vec<SessionMeta>` | Sidebar list, sorted by `last_active_at` desc |
+| `load_session` / `create_session` / `save_session_messages` / `delete_session` / `rename_session` | | Session CRUD |
+| `list_skills` | `{ skills, quarantined }` | |
+| `run_agent_step` (sync) / `run_agent_step_stream` | `AgentStepResult` | Stream takes optional `drop_tools: bool` to honour `Break` verdict |
+| `execute_powershell` | `String` | Runs the proposed PowerShell. Records outcome in `LoopDetector` |
+| `reset_loop_detector` | | Called on "New chat" and on spotlight resubmit |
+| `cancel_stream` / `get_running_command` / `kill_running_command` | | Cancellation, process tracking, kill |
+| `write_file_list` | `String` | Spills large file lists to a temp file the LLM can `Get-Content` |
+| `spotlight_submit` | | Spotlight → main window handshake |
+
+---
+
+## Privacy notes
+
+- **Ollama path** — fully local. Prompts never leave the machine.
+- **Anthropic direct path** — prompts go straight to `api.anthropic.com` with
+  your key. No shuttle-io intermediary.
+- **OpenRouter path** — prompts go to `openrouter.ai`, which forwards to the
+  upstream provider. shuttle-io pins `data_collection: "deny"` and
+  `allow_fallbacks: false` on every request. OpenRouter still logs metadata
+  by default; their training-opt-out is configured on the OpenRouter
+  dashboard side. The migration banner discloses this in-product.
+
+---
+
+## Testing
+
+- Backend: **128 unit tests** at last count (`cargo test --lib`).
+  - `retry.rs` — every classifier boundary + the cross-bucket guards
+  - `history.rs` — UTF-8 char-boundary safety, emergency floor, multi-pass orphan reconciliation, full-ladder happy path
+  - `loop_detector.rs` — key-order-independent fingerprint, escalation through Warning/Block/Break for all 3 patterns, no-progress escapes Warning via pattern-keyed warning_seen, window eviction, singleton serialization via `test_lock`
+  - `openrouter.rs` — provider-pin assertions, `data_collection:"deny"`, every `explain_failure` branch, mid-stream error frame surfacing, empty-stream `EmptyCompletion`, tool-call accumulation in order
+  - `prompts.rs` — file-list block in all three size regimes, identity/rules section shortening on `sends_native_tool_specs`, the verify-Test-Path rule
+  - `sessions.rs` — title generation (Unicode, truncation, empty), path-traversal rejection, create/load roundtrip, ordering by `last_active_at` desc, atomic write (tmp + rename), skip-corrupt-files, delete idempotency
+  - `router.rs` — every prefix permutation including `anthropic:anthropic/...` and bare `anthropic/...`
+  - `skills.rs` — every safety rule, case-insensitive matches, the curl-without-pipe-is-safe regression, wget-pipe-to-bash detection
+  - `config.rs` — legacy `openai`/`gemini` field drop, default seed
+  - `tools/*.rs` — registry lookup, `ask_user_question` validation, PowerShell exec + failure exit codes
+  - `agent.rs` — tool-proposal extraction, AgentStepResult serialization shape, loop-verdict escalation
+
+- Frontend: **19 vitest tests** (`npm test`).
+  - `agent.test.ts` — `isTaskComplete` patterns
+  - `useError.test.ts` — show/clear/auto-dismiss timing
+  - `QuestionApproval.test.tsx` — radio + multi-select + custom-answer paths
+  - `ChatMessage.test.tsx` — synthetic vs real-user rendering distinction (the "shuttle internal" badge)
+
+Run both via `cargo test --lib && npm test` from project root.
+
+---
+
+## Build & ship
+
+```powershell
+# Dev (hot-reload frontend, Rust recompiles on save)
+npm run tauri dev
+
+# Release MSIX / NSIS installer
+npm run tauri build
 ```
 
-**Optional LLM providers** (auto-detected if installed):
-- [Ollama](https://ollama.ai/) — local models, no API key needed
-- [Claude Code](https://claude.ai/claude-code) — log in with `claude`, models appear as `claude:*`
-- [Codex CLI](https://github.com/openai/codex) — set `OPENAI_API_KEY` or install CLI, models appear as `codex:*`
-- OpenAI / Gemini API keys — enter in Settings panel
+Output lands in `src-tauri/target/release/bundle/`.
 
 ---
 
-## OAuth Authentication
+## Known limitations / pending work
 
-Shuttle uses OAuth flows for two providers: **Anthropic** (Claude Code credentials) and **Antigravity** (Google internal). Both auto-refresh tokens when expired. The OAuth implementations are based on research from **[pi-ai](https://github.com/badlogic/pi-mono)** (`@mariozechner/pi-ai` on npm), used by [OpenClaw](https://github.com/openclaw/openclaw).
-
-### Anthropic (Claude Code Credentials)
-
-Shuttle borrows Claude Code's OAuth tokens to call the Anthropic API. This is a subscription-based auth path (Claude Pro/Max), not API key billing.
-
-**Flow:**
-1. User logs into Claude Code CLI (`claude`) — this stores OAuth tokens in `~/.claude/.credentials.json`
-2. Shuttle reads the `claudeAiOauth` object: `accessToken` (prefix `sk-ant-oat-*`), `refreshToken`, `expiresAt` (milliseconds)
-3. On each request, Shuttle checks expiry and auto-refreshes via `https://console.anthropic.com/v1/oauth/token` if needed
-4. OAuth tokens require different headers than API keys:
-
-| Header | Value | Why |
-|---|---|---|
-| `Authorization` | `Bearer <token>` | OAuth uses Bearer, not `x-api-key` |
-| `anthropic-beta` | `claude-code-20250219,oauth-2025-04-20` | Required for OAuth tokens |
-| `user-agent` | `claude-cli/2.1.62` | Claude Code identity |
-| `x-app` | `cli` | Claude Code identity |
-
-### Maintaining Auth When It Breaks
-
-The OAuth protocol details (headers, endpoints, client ID) can change. Our implementation is based on **[pi-ai](https://github.com/badlogic/pi-mono)** (`@mariozechner/pi-ai` on npm), which is used by [OpenClaw](https://github.com/openclaw/openclaw) and tracks Anthropic's OAuth changes closely.
-
-**When Claude auth breaks, check these files in pi-mono:**
-
-| What to check | File in `badlogic/pi-mono` |
-|---|---|
-| Required HTTP headers, beta flags | `packages/ai/src/providers/anthropic.ts` → `createClient()` → `isOAuthToken` branch |
-| Token refresh endpoint, client ID | `packages/ai/src/utils/oauth/anthropic.ts` → `TOKEN_URL`, `CLIENT_ID` |
-| Token format / field names | `packages/ai/src/utils/oauth/anthropic.ts` → `loginAnthropic()` return value |
-
-**Current values (update if they change):**
-- Token URL: `https://console.anthropic.com/v1/oauth/token`
-- Client ID: `9d1c250a-e61b-44d9-88ed-5944d1962f5e`
-- OAuth token prefix: `sk-ant-oat`
-- Beta header: `claude-code-20250219,oauth-2025-04-20`
-- Claude CLI version in user-agent: `2.1.62`
-
-**Quick test without the app:**
-```bash
-curl https://api.anthropic.com/v1/messages \
-  -H "Authorization: Bearer <token-from-credentials-file>" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "anthropic-beta: claude-code-20250219,oauth-2025-04-20" \
-  -H "user-agent: claude-cli/2.1.62" \
-  -H "x-app: cli" \
-  -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-20250514","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}'
-```
-
-### Antigravity (Google Internal)
-
-Shuttle has a built-in OAuth2 PKCE login flow for Antigravity (Google's internal Gemini endpoint). Unlike Anthropic, this doesn't borrow credentials from another CLI — Shuttle handles the entire login.
-
-**Flow:**
-1. User clicks "Login" in Settings → browser opens Google OAuth consent
-2. Local callback server on `localhost:51121` captures the auth code
-3. Code exchanged for tokens via `https://oauth2.googleapis.com/token`
-4. Tokens stored in `AppData/Roaming/shuttle-io/antigravity_credentials.json`
-5. Auto-refreshes on expiry (5-minute buffer) before each API call
-6. API calls go to `https://daily-cloudcode-pa.sandbox.googleapis.com/` with `Authorization: Bearer` + Claude Code-style stealth headers
-
-**Key files:**
-- `src-tauri/src/auth/antigravity.rs` — Full OAuth2 PKCE login, token refresh, credential storage
-- `src-tauri/src/llm/clients/antigravity.rs` — Antigravity API client (SSE streaming, tool calls)
-
-**Current values (update if they change):**
-- Client ID: `1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`
-- Token URL: `https://oauth2.googleapis.com/token`
-- API URL: `https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse`
-- Callback port: `51121`
-
-**When Antigravity auth breaks, check pi-mono:**
-
-| What to check | File in `badlogic/pi-mono` |
-|---|---|
-| Client ID, scopes, endpoints | `packages/ai/src/utils/oauth/google-antigravity.ts` |
-| API request format, headers | Check OpenClaw's `src/agents/` for Antigravity-specific handling |
-
-**503 "MODEL_CAPACITY_EXHAUSTED":** Shuttle auto-retries up to 3 times with increasing backoff (10s, 20s, 30s). The user sees a `[Capacity unavailable, retrying...]` message while waiting.
+- **Small Ollama models** still hallucinate "Task Complete" without verifying
+  output files. The system prompt forces `Test-Path` checks now (rule 5), but
+  weak models will sometimes still claim success. Lean on Claude/GPT/Gemini
+  via OpenRouter for anything destructive.
+- **Spotlight always starts a fresh session.** If you want to continue an
+  existing conversation, switch to the main window and pick the session in
+  the sidebar first.
+- **OpenRouter outage recovery is manual.** No auto-failover to direct
+  Anthropic — we surface a clear "service issue, not your key" error
+  instead.
+- **Single concurrent agent loop by design.** The global cancel flag and
+  `LoopDetector` singleton assume one in-flight conversation. Subagents /
+  multi-window concurrent loops would need a per-session `CancellationToken`.
+- **Multimodal not yet wired.** Vision / image input would need a new
+  `MessagePart` enum and per-client serialization.
 
 ---
 
-## Troubleshooting
+## License
 
-- **Explorer Sync Fails**: Run as Administrator for Admin-privileged Explorer windows.
-- **Ollama Connection**: Ensure `ollama serve` is running, check URL in settings.
-- **Port 1420 in use**: Kill the existing Vite process before dev.
-- **Hotkey conflict**: Edit `hotkey` in `shuttle_config.json`.
-- **Claude Code "expired"**: Shuttle auto-refreshes tokens. If it still fails, run `claude` in a terminal to re-authenticate, then check the maintenance section above.
-- **Claude 401/403 errors**: Headers or beta flags may have changed — check pi-ai reference above.
-- **Skills not showing**: Check that the required binary is on PATH (`where.exe <binary>`).
+MIT. Personal-use desktop assistant — third-party provider terms apply (don't
+ship shuttle-io as a SaaS product without dealing with Anthropic / OpenAI /
+Google ToS yourself).

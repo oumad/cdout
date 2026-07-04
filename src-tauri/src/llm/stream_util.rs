@@ -16,13 +16,22 @@ where
     S: Stream<Item = Result<bytes::Bytes, E>>,
     E: std::fmt::Display,
 {
+    if crate::utils::cancel::is_cancelled() {
+        return Ok(None);
+    }
     match tokio::time::timeout(timeout, stream.next()).await {
         Ok(Some(Ok(chunk))) => Ok(Some(chunk)),
         Ok(Some(Err(e))) => Err(format!("Stream error: {}", e)),
         Ok(None) => Ok(None), // Stream ended
-        Err(_) => Err(format!(
-            "Stream stalled — no data received for {}s. The LLM may be unresponsive.",
-            timeout.as_secs()
-        )),
+        Err(_) => {
+            if crate::utils::cancel::is_cancelled() {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "Stream stalled — no data received for {}s. The LLM may be unresponsive.",
+                    timeout.as_secs()
+                ))
+            }
+        }
     }
 }

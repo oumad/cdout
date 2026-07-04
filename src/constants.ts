@@ -11,6 +11,12 @@ export const FILE_LIST_THRESHOLD = 20;
 export const TOOL_OUTPUT_COLLAPSE_CHARS = 200;
 export const MESSAGE_COLLAPSE_CHARS = 500;
 
+// Tool names
+export const TOOLS = {
+  RUN_POWERSHELL: "run_powershell",
+  ASK_USER_QUESTION: "ask_user_question",
+} as const;
+
 // Completion detection keywords
 export const COMPLETION_KEYWORDS = [
   "task complete",
@@ -35,19 +41,31 @@ export const CMD = {
   SET_OLLAMA_URL: "set_ollama_url",
   GET_SELECTED_MODEL: "get_selected_model",
   SET_SELECTED_MODEL: "set_selected_model",
-  LOGIN_ANTIGRAVITY: "login_antigravity",
-  GET_ANTIGRAVITY_STATUS: "get_antigravity_status",
-  SET_OPENAI_KEY: "set_openai_key",
-  SET_GEMINI_KEY: "set_gemini_key",
+  SET_OPENROUTER_KEY: "set_openrouter_key",
+  SET_ANTHROPIC_KEY: "set_anthropic_key",
   GET_API_KEYS: "get_api_keys",
+  GET_SHOW_FREE_OPENROUTER_MODELS: "get_show_free_openrouter_models",
+  SET_SHOW_FREE_OPENROUTER_MODELS: "set_show_free_openrouter_models",
+  GET_OPENROUTER_DISCLOSURE_ACK: "get_openrouter_disclosure_ack",
+  SET_OPENROUTER_DISCLOSURE_ACK: "set_openrouter_disclosure_ack",
+  HAS_LEGACY_CREDENTIALS: "has_legacy_credentials",
+  CLEANUP_LEGACY_CREDENTIALS: "cleanup_legacy_credentials",
   GET_HOTKEY: "get_hotkey",
   SET_HOTKEY: "set_hotkey",
   INIT_AGENT_CONVERSATION: "init_agent_conversation",
-  RUN_AGENT_STEP: "run_agent_step",
+  LIST_SESSIONS: "list_sessions",
+  LOAD_SESSION: "load_session",
+  CREATE_SESSION: "create_session",
+  SAVE_SESSION_MESSAGES: "save_session_messages",
+  DELETE_SESSION: "delete_session",
+  RENAME_SESSION: "rename_session",
   RUN_AGENT_STEP_STREAM: "run_agent_step_stream",
   EXECUTE_POWERSHELL: "execute_powershell",
+  RESET_LOOP_DETECTOR: "reset_loop_detector",
+  CANCEL_STREAM: "cancel_stream",
+  GET_RUNNING_COMMAND: "get_running_command",
+  KILL_RUNNING_COMMAND: "kill_running_command",
   WRITE_FILE_LIST: "write_file_list",
-  GET_CLI_CREDENTIALS_STATUS: "get_cli_credentials_status",
   LIST_SKILLS: "list_skills",
   SPOTLIGHT_SUBMIT: "spotlight_submit",
 } as const;

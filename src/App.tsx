@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -8,16 +8,21 @@ import {
   File,
   Bot,
   Loader2,
-  StopCircle,
   FolderSync,
   RefreshCw,
   Settings,
   X,
-  CheckCircle,
-  XCircle,
 } from "lucide-react";
 import "./App.css";
-import type { Message, SpotlightSubmitPayload, ApiKeysResponse, Skill, CliCredentialsStatus } from "./types";
+import type {
+  Message,
+  SpotlightSubmitPayload,
+  ApiKeysResponse,
+  Skill,
+  QuarantinedSkill,
+  PendingQuestion,
+  ToolProposal,
+} from "./types";
 import {
   BLUR_GRACE_MS,
   FOCUS_DELAY_MS,
@@ -25,9 +30,10 @@ import {
   MAX_AUTO_STEPS,
   FILE_LIST_THRESHOLD,
   EVENTS,
+  TOOLS,
 } from "./constants";
 import * as api from "./utils/tauri";
-import { useModels, useExplorer, useError } from "./hooks";
+import { useModels, useExplorer, useError, useSessions } from "./hooks";
 import { isTaskComplete } from "./utils/agent";
 import {
   ErrorToast,
@@ -35,7 +41,11 @@ import {
   TitleBar,
   ChatMessage,
   CommandApproval,
+  QuestionApproval,
   ChatInput,
+  SettingsPage,
+  MigrationBanner,
+  SessionsSidebar,
 } from "./components";
 
 const WINDOW_LABEL = getCurrentWindow().label;
@@ -50,12 +60,22 @@ function App() {
 // ═══════════════════════════════════════════════════════════════
 
 function SpotlightApp() {
-  const { modelName, setModelName, availableModels, ollamaConnected } = useModels();
+  const { modelName, setModelName, availableModels, ollamaConnected, fetchModels } = useModels();
   const { explorerState, fetchExplorer } = useExplorer();
   const { error, showError, clearError } = useError();
   const [agentPrompt, setAgentPrompt] = useState("");
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const shownAt = useRef(0);
+
+  const refreshModels = async () => {
+    setIsRefreshingModels(true);
+    try {
+      await fetchModels();
+    } finally {
+      setIsRefreshingModels(false);
+    }
+  };
 
   useEffect(() => {
     fetchExplorer();
@@ -100,7 +120,7 @@ function SpotlightApp() {
   return (
     <main className="flex flex-col h-screen text-gray-100 font-sans overflow-hidden">
       <div className="flex-1 flex items-center justify-center drag-region">
-        <div className="w-[560px] bg-gray-900/95 backdrop-blur-xl border border-gray-700/50 rounded-2xl shadow-2xl shadow-black/50 p-6 flex flex-col items-center gap-4 no-drag">
+        <div className="w-[560px] bg-gray-900 border border-gray-700/50 rounded-2xl shadow-2xl shadow-black/50 p-6 flex flex-col items-center gap-4 no-drag">
           <Bot size={36} className="text-indigo-500 opacity-80" />
           <input
             ref={inputRef}
@@ -138,16 +158,31 @@ function SpotlightApp() {
                 )}
               </div>
             )}
-            <div className="flex items-center gap-2 text-gray-600">
-              <ModelSelector
-                modelName={modelName}
-                onChange={setModelName}
-                models={availableModels}
-                connected={ollamaConnected}
-                className="text-xs text-gray-600"
-              />
+            <div className="flex items-center gap-2 text-gray-600 max-w-full">
+              <div className="flex items-center gap-1 min-w-0 max-w-[420px]">
+                <ModelSelector
+                  modelName={modelName}
+                  onChange={setModelName}
+                  models={availableModels}
+                  connected={ollamaConnected}
+                  className="text-xs text-gray-600 truncate min-w-0"
+                  maxDisplayChars={32}
+                />
+                <button
+                  onClick={refreshModels}
+                  disabled={isRefreshingModels}
+                  className="p-0.5 rounded text-gray-600 hover:text-gray-300 hover:bg-gray-800/50 transition disabled:opacity-50 shrink-0"
+                  title="Refresh model list (re-checks Ollama + cloud keys)"
+                  type="button"
+                >
+                  <RefreshCw
+                    size={10}
+                    className={isRefreshingModels ? "animate-spin" : ""}
+                  />
+                </button>
+              </div>
               <span className="text-gray-700">·</span>
-              <span>Esc to dismiss</span>
+              <span className="whitespace-nowrap shrink-0">Esc to dismiss</span>
             </div>
           </div>
         </div>
@@ -164,30 +199,61 @@ function SpotlightApp() {
 
 function MainApp() {
   const [ollamaUrl, setOllamaUrl] = useState("http://localhost:11434");
-  const { modelName, setModelName, availableModels, ollamaConnected, setOllamaConnected, fetchModels } = useModels(ollamaUrl);
-  const { explorerState, setExplorerState } = useExplorer();
   const { error, showError, clearError } = useError();
+  const { modelName, setModelName, availableModels, ollamaConnected, setOllamaConnected, fetchModels } = useModels(
+    ollamaUrl,
+    {
+      onSwap: (prev, next) =>
+        showError(
+          `Model '${prev}' is no longer available — switched to '${next}'. Open Settings if you want to pick a different one.`
+        ),
+    }
+  );
+  const { explorerState, setExplorerState } = useExplorer();
   const [loading, setLoading] = useState(false);
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [tempOllamaUrl, setTempOllamaUrl] = useState("");
   const [agentPrompt, setAgentPrompt] = useState("");
-  const [antigravityEmail, setAntigravityEmail] = useState<string | null>(null);
 
-  // Provider State
-  const [openaiKey, setOpenaiKey] = useState("");
-  const [geminiKey, setGeminiKey] = useState("");
+  // Provider State — single OpenRouter key, optional Anthropic for caching.
+  // The values here only hold the user's CURRENT-edit-session input. The
+  // server-side stored key is never read back into renderer state; the
+  // placeholder UX shows a masked preview ("…3fa1") to confirm a key is set.
+  const [openrouterKey, setOpenrouterKey] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [openrouterPreview, setOpenrouterPreview] = useState<string | null>(null);
+  const [anthropicPreview, setAnthropicPreview] = useState<string | null>(null);
+  const [showFreeOpenrouterModels, setShowFreeOpenrouterModels] = useState(false);
 
   // Skills State
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [quarantinedSkills, setQuarantinedSkills] = useState<QuarantinedSkill[]>([]);
 
-  // CLI Credentials State
-  const [cliCredentials, setCliCredentials] = useState<CliCredentialsStatus | null>(null);
+  // One-time migration banner — shown when legacy CLI/Antigravity/openai/gemini
+  // configs are detected on disk and the user hasn't acked yet.
+  const [showMigrationBanner, setShowMigrationBanner] = useState(false);
+
+  // Sessions — persistent chat history sidebar.
+  const {
+    sessions,
+    currentSessionId,
+    setCurrentSessionId,
+    refresh: refreshSessions,
+    newSession,
+    loadSession: loadSessionFromStore,
+    deleteSession: deleteSessionFromStore,
+    renameSession: renameSessionInStore,
+    scheduleSave,
+    flushSave,
+  } = useSessions();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Conversation State
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [pendingCommand, setPendingCommand] = useState<string | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [autoExecute, setAutoExecute] = useState(false);
@@ -195,11 +261,55 @@ function MainApp() {
   autoExecuteRef.current = autoExecute;
   const stopRequested = useRef(false);
   const autoStepCount = useRef(0);
+  const consecutiveFailures = useRef(0);
+  /**
+   * Monotonic run-generation counter. Bumped whenever the current
+   * conversation is torn down (session switch, new chat, spotlight submit).
+   * Each runAgentStep captures the generation at entry and discards its
+   * results after any await if the generation has moved on — this is the
+   * robust fix for "a stale in-flight stream writes into the newly-loaded
+   * session". A boolean flag reset after one microtask (the old approach)
+   * could not cover a network round-trip that resolves later.
+   */
+  const runGeneration = useRef(0);
+  /**
+   * tool_call_id of the currently-surfaced PowerShell proposal. Needed so
+   * dismiss/reject can append a correlated tool_result and never leave an
+   * orphaned assistant tool_use (which Anthropic rejects with HTTP 400).
+   */
+  const pendingCommandToolId = useRef<string | undefined>(undefined);
+  /**
+   * True while an auto-step continuation is scheduled (setTimeout window) but
+   * not yet started. Without this, the `finally` clears isProcessing during
+   * the delay, the idle-detection effect sees the loop as idle, and a queued
+   * prompt starts a SECOND concurrent agent loop.
+   */
+  const autoStepPending = useRef(false);
+  /**
+   * When the previous turn's loop_verdict was `Break`, set this so the NEXT
+   * run_agent_step_stream call passes `drop_tools=true` — the backend then
+   * sends no tool definitions, forcing the model into a text-only
+   * reassessment. Auto-cleared after each turn is consumed.
+   */
+  const dropToolsForNextRequest = useRef(false);
+  const [killDialog, setKillDialog] = useState<{ pid: number; command: string } | null>(null);
+  const [queuedPrompts, setQueuedPrompts] = useState<string[]>([]);
+  const queuedPromptsRef = useRef<string[]>([]);
+  queuedPromptsRef.current = queuedPrompts;
+  const MAX_CONSECUTIVE_FAILURES = 3;
 
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Streaming State
   const [streamingText, setStreamingText] = useState("");
+
+  // Persist conversation to the active session, debounced. Effect runs on
+  // every chatHistory change while a session is selected.
+  useEffect(() => {
+    if (!currentSessionId) return;
+    if (chatHistory.length === 0) return;
+    scheduleSave(chatHistory);
+  }, [chatHistory, currentSessionId, scheduleSave]);
 
   // UI State
   const [isContextOpen, setIsContextOpen] = useState(false);
@@ -217,6 +327,17 @@ function MainApp() {
     document.body.style.background = '#030712';
   }, []);
 
+  // Manual model-refresh state (button next to the picker in ChatInput).
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
+  const refreshModels = async () => {
+    setIsRefreshingModels(true);
+    try {
+      await fetchModels();
+    } finally {
+      setIsRefreshingModels(false);
+    }
+  };
+
   // Fetch saved Ollama URL on mount
   useEffect(() => {
     const loadUrl = async () => {
@@ -229,40 +350,108 @@ function MainApp() {
       }
     };
     loadUrl();
-    api.getAntigravityStatus().then(setAntigravityEmail).catch(console.error);
-    api.listSkills().then(setSkills).catch(console.error);
-    api.getCliCredentialsStatus().then(setCliCredentials).catch(console.error);
-    api.getApiKeys().then((keys: ApiKeysResponse) => {
-      setOpenaiKey(keys.openai || "");
-      setGeminiKey(keys.gemini || "");
-    }).catch(console.error);
+    api.listSkills()
+      .then((r) => {
+        setSkills(r.skills);
+        setQuarantinedSkills(r.quarantined);
+      })
+      .catch(console.error);
+    api
+      .getApiKeys()
+      .then((keys: ApiKeysResponse) => {
+        // Plaintext is intentionally NOT pulled into state. Only the masked
+        // preview is shown via placeholder until the user enters a new key.
+        setOpenrouterPreview(keys.openrouter_preview);
+        setAnthropicPreview(keys.anthropic_preview);
+      })
+      .catch(console.error);
+    api.getShowFreeOpenrouterModels().then(setShowFreeOpenrouterModels).catch(() => {});
+
+    // Migration banner: detect legacy creds + check whether user already acked.
+    Promise.all([api.hasLegacyCredentials(), api.getOpenrouterDisclosureAck()])
+      .then(([hasLegacy, acked]) => {
+        if (hasLegacy && !acked) setShowMigrationBanner(true);
+      })
+      .catch(() => {});
   }, []);
 
-  // Listen for spotlight submission
+  // Tear down any in-flight UI state. Called before starting a new session
+  // (from spotlight, from the New-chat button, or from selecting a different
+  // session in the sidebar) to guarantee no stale prompt/proposal/streaming
+  // text leaks into the new view.
+  async function hardResetSessionUi() {
+    // Invalidate any in-flight agent step: the generation bump means its
+    // post-await guards will discard its results instead of writing them into
+    // the new session. This replaces the old (racy) "set stopRequested true,
+    // await one microtask, set it false" dance, which could not survive a
+    // network round-trip that resolved after the microtask.
+    runGeneration.current++;
+    stopRequested.current = false;
+    autoStepPending.current = false;
+    try {
+      await api.cancelStream();
+    } catch {
+      // ignore — stream may not be active
+    }
+    try {
+      await api.resetLoopDetector();
+    } catch {
+      // ignore
+    }
+    setStreamingText("");
+    setPendingCommand(null);
+    setPendingQuestion(null);
+    pendingCommandToolId.current = undefined;
+    setIsProcessing(false);
+    setIsExecuting(false);
+    setAutoExecute(false);
+    autoStepCount.current = 0;
+    consecutiveFailures.current = 0;
+    setQueuedPrompts([]);
+    setExpandedResponses({});
+  }
+
+  // Listen for spotlight submission. Every spotlight submit becomes a fresh
+  // session — this is the documented fix for the "spotlight reuses stale main
+  // window state" bug. The hard reset above guarantees the UI flips to a
+  // clean state BEFORE the new session is loaded.
   useEffect(() => {
     const unlisten = listen<SpotlightSubmitPayload>(EVENTS.SPOTLIGHT_SUBMITTED, async (event) => {
       const { prompt, model } = event.payload;
-      setModelName(model);
-      setIsProcessing(true);
+      setIsSettingsOpen(false);
       try {
+        // 1) Cancel any in-flight stream + clear all UI state.
+        await flushSave();
+        await hardResetSessionUi();
+        // 2) Switch model context for the new session.
+        setModelName(model);
+        // 3) Fetch the current Explorer context.
         const state = await api.getExplorerStatus();
         setExplorerState(state);
-        const history = await api.initAgentConversation(
+        lastSyncedContext.current = {
+          path: state.path,
+          files: [...state.selected_files],
+        };
+        setSyncPending(false);
+        // 4) Create a brand-new session (this writes to disk and gives us
+        //    a clean history seeded with system+user messages).
+        const session = await newSession(
+          prompt,
           state.path,
           state.selected_files,
-          prompt
+          model
         );
-        lastSyncedContext.current = { path: state.path, files: [...state.selected_files] };
-        setSyncPending(false);
-        setChatHistory(history);
-
-        await runAgentStep(history, autoExecuteRef.current, model);
+        setChatHistory(session.messages);
+        // 5) Kick off the first agent step.
+        setIsProcessing(true);
+        await runAgentStep(session.messages, autoExecuteRef.current, model);
       } catch (e) {
         showError(String(e));
         setIsProcessing(false);
       }
     });
     return () => { unlisten.then(fn => fn()); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-scroll to bottom
@@ -295,25 +484,77 @@ function MainApp() {
     }
   }
 
-  // Step 1: Initialize Conversation
-  async function startAgent() {
-    if (!explorerState || !agentPrompt.trim()) return;
+  // Submit if idle, otherwise queue until the current step finishes
+  function submitOrQueue() {
+    const text = agentPrompt.trim();
+    if (!text) return;
+    const isBusy =
+      isProcessing ||
+      isExecuting ||
+      streamingText.length > 0 ||
+      pendingCommand !== null ||
+      pendingQuestion !== null ||
+      autoStepPending.current;
+    if (isBusy) {
+      setQueuedPrompts((q) => [...q, text]);
+      setAgentPrompt("");
+    } else {
+      startAgent();
+    }
+  }
 
-    const promptToSend = agentPrompt;
-    setAgentPrompt("");
+  function removeQueuedPrompt(idx: number) {
+    setQueuedPrompts((q) => q.filter((_, i) => i !== idx));
+  }
+
+  // Drain the queue when state goes idle
+  useEffect(() => {
+    const idle =
+      !isProcessing &&
+      !isExecuting &&
+      !streamingText &&
+      !pendingCommand &&
+      !pendingQuestion &&
+      !autoStepPending.current;
+    if (idle && queuedPromptsRef.current.length > 0) {
+      const next = queuedPromptsRef.current[0];
+      setQueuedPrompts((q) => q.slice(1));
+      queueMicrotask(() => startAgent(next));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isProcessing, isExecuting, streamingText, pendingCommand, pendingQuestion]);
+
+  // Step 1: Initialize Conversation
+  async function startAgent(promptOverride?: string) {
+    const promptToSend = (promptOverride ?? agentPrompt).trim();
+    if (!explorerState || !promptToSend) return;
+
+    if (promptOverride === undefined) {
+      setAgentPrompt("");
+    }
     setIsProcessing(true);
     autoStepCount.current = 0;
+    consecutiveFailures.current = 0;
     setPendingCommand(null);
+    setPendingQuestion(null);
+    // Backend auto-resets the loop detector when starting a fresh conversation,
+    // but call it explicitly when the user kicks off via the "New chat" path
+    // (where history is being thrown away rather than appended to).
+    api.resetLoopDetector().catch(() => {});
 
     try {
       let history = chatHistory;
 
       if (history.length === 0) {
-        history = await api.initAgentConversation(
+        // Empty history → create a fresh session (which auto-seeds with the
+        // system + initial user message via init_agent_conversation).
+        const session = await newSession(
+          promptToSend,
           explorerState.path,
           explorerState.selected_files,
-          promptToSend
+          modelName
         );
+        history = session.messages;
         lastSyncedContext.current = {
           path: explorerState.path,
           files: [...explorerState.selected_files]
@@ -359,47 +600,151 @@ function MainApp() {
     }
   }
 
+  // Pick which proposal to surface. ask_user_question always wins — if the model
+  // is asking for clarification, that's a hard pause regardless of any sibling
+  // run_powershell proposals.
+  function selectProposal(proposals: ToolProposal[]): ToolProposal | null {
+    if (proposals.length === 0) return null;
+    const question = proposals.find((p) => p.tool_name === TOOLS.ASK_USER_QUESTION);
+    return question ?? proposals[0];
+  }
+
   // Step 2: Run Agent Step
   async function runAgentStep(history: Message[], shouldAutoExecute = autoExecute, modelOverride?: string) {
+    // Capture the run generation at entry. If a session switch / new-chat /
+    // spotlight submit bumps it while we are awaiting the stream, every
+    // post-await write below is skipped so we never corrupt the new session.
+    const myGen = runGeneration.current;
+    const isStale = () => runGeneration.current !== myGen;
     try {
       setStreamingText("");
+      // Consume the drop-tools-for-next-request flag (set by a prior Break
+      // verdict). The backend uses this to send an empty tool-defs list,
+      // forcing the model into a text-only reassessment.
+      const dropTools = dropToolsForNextRequest.current;
+      dropToolsForNextRequest.current = false;
       const result = await api.runAgentStepStream(
         modelOverride || modelName,
         history,
         (chunk) => {
+          // Drop chunks from a superseded run (stale session) or after a Stop.
+          if (isStale() || stopRequested.current) return;
           if (chunk.kind === "TextDelta") {
             setStreamingText((prev) => prev + chunk.text);
           }
-        }
+        },
+        dropTools
       );
-      setStreamingText("");
 
-      setChatHistory(result.updated_history);
+      // A newer run replaced this one while we were streaming — discard
+      // everything silently; the new run owns the UI now.
+      if (isStale()) return;
+
+      setStreamingText("");
 
       if (stopRequested.current) {
         stopRequested.current = false;
         return;
       }
 
-      // Extract command from either CommandProposal (string) or ToolProposals (array)
-      const isProposal = result.response.type === "CommandProposal" || result.response.type === "ToolProposals";
-      const cmd = isProposal
-        ? (result.response.type === "ToolProposals"
-            ? (result.response.content as import("./types").ToolProposal[])[0]?.command
-            : result.response.content as string)
-        : null;
+      setChatHistory(result.updated_history);
 
-      if (isProposal && cmd) {
+      // Normalize: CommandProposal (legacy string) → synthetic single ToolProposal.
+      let proposals: ToolProposal[] = [];
+      if (result.response.type === "ToolProposals") {
+        proposals = result.response.content as ToolProposal[];
+      } else if (result.response.type === "CommandProposal") {
+        proposals = [{
+          tool_name: TOOLS.RUN_POWERSHELL,
+          command: result.response.content as string,
+        }];
+      }
+
+      const proposal = selectProposal(proposals);
+
+      // Branch 1: ask_user_question — never auto-execute, always surface UI.
+      if (proposal && proposal.tool_name === TOOLS.ASK_USER_QUESTION && proposal.question_data) {
+        setPendingCommand(null);
+        setPendingQuestion({
+          data: proposal.question_data,
+          tool_call_id: proposal.tool_call_id,
+        });
+        // Asking for clarification is not a fix-loop — reset the failure counter.
+        consecutiveFailures.current = 0;
+        if (shouldAutoExecute) setAutoExecute(false);
+        return;
+      }
+
+      // Branch 2: PowerShell command proposal.
+      if (proposal && proposal.command) {
+        const cmd = proposal.command;
+        // Remember the tool_call_id so dismiss/reject can answer the tool_use.
+        pendingCommandToolId.current = proposal.tool_call_id;
         autoStepCount.current++;
+
+        // Backend loop detector verdict. Block/Break pauses auto-execute and
+        // surfaces the proposal for explicit approval.
+        const verdict = result.loop_verdict;
+        const loopBlocked =
+          verdict && (verdict.kind === "Block" || verdict.kind === "Break");
+        if (loopBlocked) {
+          if (shouldAutoExecute) setAutoExecute(false);
+          setIsProcessing(false);
+          // Break verdict: force the NEXT request to drop tool definitions so
+          // the model can't propose another action — only reassess in prose
+          // or stop. Block verdict only pauses auto-execute and surfaces.
+          if (verdict?.kind === "Break") {
+            dropToolsForNextRequest.current = true;
+          }
+          setChatHistory([
+            ...result.updated_history,
+            {
+              role: "user",
+              content: `[Loop detected] ${verdict.reason} — stop, reassess, and either ask a clarifying question with ask_user_question or wait for the user's guidance.`,
+              synthetic: true,
+            },
+          ]);
+          setPendingCommand(cmd);
+          return;
+        }
+
         if (shouldAutoExecute && autoStepCount.current < MAX_AUTO_STEPS) {
           setIsExecuting(true);
           setIsProcessing(false);
           try {
             const output = await api.executePowershell(cmd, explorerState?.path || null);
+            // The session may have been switched while PowerShell ran.
+            if (isStale()) return;
+            const failed = /\[Exit code:\s*-?\d+\s*—\s*Failed\]/.test(output);
+            if (failed) {
+              consecutiveFailures.current++;
+            } else {
+              consecutiveFailures.current = 0;
+            }
+
             const newMsg: Message = { role: "tool", content: output };
             const newHistory = [...result.updated_history, newMsg];
             setChatHistory(newHistory);
             setIsExecuting(false);
+
+            // Back-to-back failure pause: catches "everything keeps erroring" loops
+            // (different commands, all failing). Hash-detection above catches the
+            // identical-command ping-pong loops.
+            if (consecutiveFailures.current >= MAX_CONSECUTIVE_FAILURES) {
+              consecutiveFailures.current = 0;
+              setAutoExecute(false);
+              setIsProcessing(false);
+              setChatHistory([
+                ...newHistory,
+                {
+                  role: "user",
+                  content: `[Auto-execute paused] ${MAX_CONSECUTIVE_FAILURES} commands failed in a row. Stop, re-read the errors above, and either explain what's going wrong or wait for the user's guidance instead of trying more variants.`,
+                  synthetic: true,
+                },
+              ]);
+              return;
+            }
+
             setIsProcessing(true);
             await runAgentStep(newHistory, true, modelOverride);
           } catch (e) {
@@ -412,28 +757,44 @@ function MainApp() {
           if (shouldAutoExecute) setAutoExecute(false);
           setPendingCommand(cmd);
         }
-      } else {
-        setPendingCommand(null);
-
-        if (shouldAutoExecute) {
-          const responseText = typeof result.response.content === "string" ? result.response.content : "";
-          const taskDone = isTaskComplete(responseText);
-
-          if (!taskDone && autoStepCount.current < MAX_AUTO_STEPS) {
-            autoStepCount.current++;
-            setTimeout(async () => {
-              if (stopRequested.current) return;
-              const newHistory = [...result.updated_history, { role: "user" as const, content: "If there are remaining UNFINISHED steps, proceed to the next one. If all steps are already done, say 'Task Complete'. Do NOT repeat any step that has already been executed." }];
-              setChatHistory(newHistory);
-              setIsProcessing(true);
-              await runAgentStep(newHistory, true, modelOverride);
-            }, AUTO_STEP_DELAY_MS);
-            return;
-          }
-        }
-
-        setAutoExecute(false);
+        return;
       }
+
+      // Branch 3: plain text response (success summary or chatter).
+      setPendingCommand(null);
+
+      if (shouldAutoExecute) {
+        const responseText = typeof result.response.content === "string" ? result.response.content : "";
+        const taskDone = isTaskComplete(responseText);
+
+        if (!taskDone && autoStepCount.current < MAX_AUTO_STEPS) {
+          autoStepCount.current++;
+          // Mark the loop as still-busy across the delay window so the
+          // idle-detection effect doesn't drain a queued prompt into a
+          // SECOND concurrent agent loop.
+          autoStepPending.current = true;
+          setTimeout(async () => {
+            autoStepPending.current = false;
+            // Bail if a Stop happened or a newer run superseded this one.
+            if (stopRequested.current || isStale()) return;
+            const newHistory: Message[] = [
+              ...result.updated_history,
+              {
+                role: "user",
+                content:
+                  "If the task is complete, reply with exactly 'Task Complete' and stop. Otherwise, continue ONLY if there is genuinely more work to do — do not re-run, re-verify, or rephrase steps that already produced the expected output. CRITICAL: if you claimed to create files, you MUST verify each one exists with Test-Path BEFORE declaring Task Complete.",
+                synthetic: true,
+              },
+            ];
+            setChatHistory(newHistory);
+            setIsProcessing(true);
+            await runAgentStep(newHistory, true, modelOverride);
+          }, AUTO_STEP_DELAY_MS);
+          return;
+        }
+      }
+
+      setAutoExecute(false);
     } catch (e) {
       console.error(`Error running agent step: ${e}`);
       showError(`LLM Error: ${String(e)}`);
@@ -443,12 +804,115 @@ function MainApp() {
     }
   }
 
-  function stopAgent() {
+  // Step 2b: User answers a question — feed the choice back as a tool result.
+  async function answerQuestion(answer: string) {
+    if (!pendingQuestion) return;
+    const q = pendingQuestion;
+    setPendingQuestion(null);
+    const toolResult: Message = {
+      role: "tool",
+      content: answer,
+      tool_calls: q.tool_call_id
+        ? [{
+            id: q.tool_call_id,
+            function: { name: TOOLS.ASK_USER_QUESTION, arguments: {} },
+          }]
+        : undefined,
+    };
+    const newHistory = [...chatHistory, toolResult];
+    setChatHistory(newHistory);
+    setIsProcessing(true);
+    await runAgentStep(newHistory);
+  }
+
+  function dismissQuestion() {
+    if (!pendingQuestion) return;
+    const q = pendingQuestion;
+    setPendingQuestion(null);
+    // Surface the dismissal as a tool result so the model has context for the next turn.
+    const toolResult: Message = {
+      role: "tool",
+      content: "[User dismissed the question without answering.]",
+      tool_calls: q.tool_call_id
+        ? [{
+            id: q.tool_call_id,
+            function: { name: TOOLS.ASK_USER_QUESTION, arguments: {} },
+          }]
+        : undefined,
+    };
+    setChatHistory((prev) => [...prev, toolResult]);
+    setIsProcessing(false);
+  }
+
+  async function stopAgent() {
     stopRequested.current = true;
     setAutoExecute(false);
+
+    // Cancel the LLM stream backend-side (tears down the network connection)
+    api.cancelStream().catch(() => {});
+
+    const partial = streamingText;
+    setStreamingText("");
+
+    // Preserve any partial assistant text + an interrupt note so the model knows
+    // it was stopped on the next turn, and the user can pick up the conversation.
+    setChatHistory((prev) => {
+      const next = [...prev];
+      if (partial.trim()) {
+        next.push({ role: "assistant", content: partial });
+      }
+      next.push({
+        role: "user",
+        content:
+          "[Interrupted by user] The user stopped this action. STOP what you are doing and wait for the user to tell you how to proceed.",
+        synthetic: true,
+      });
+      return next;
+    });
+
     setIsProcessing(false);
     setIsExecuting(false);
     setPendingCommand(null);
+    setPendingQuestion(null);
+    pendingCommandToolId.current = undefined;
+    autoStepPending.current = false;
+    api.resetLoopDetector().catch(() => {});
+
+    // If a PowerShell process is still running, ask the user whether to kill it.
+    try {
+      const running = await api.getRunningCommand();
+      if (running) {
+        setKillDialog({ pid: running.pid, command: running.command_preview });
+      }
+    } catch {
+      // ignore — not critical
+    }
+  }
+
+  async function confirmKill() {
+    if (!killDialog) return;
+    try {
+      await api.killRunningCommand();
+    } catch (e) {
+      showError(`Failed to kill process: ${String(e)}`);
+    } finally {
+      setKillDialog(null);
+    }
+  }
+
+  // Build a tool-role message that ANSWERS the pending proposal's tool_use.
+  // Every path that consumes a proposal (approve/reject/dismiss) must emit one
+  // of these so the assistant's tool_use is never left orphaned — Anthropic
+  // rejects a tool_use with no matching tool_result on the next turn (HTTP 400).
+  function buildToolResult(content: string): Message {
+    const id = pendingCommandToolId.current;
+    return {
+      role: "tool",
+      content,
+      tool_calls: id
+        ? [{ id, function: { name: TOOLS.RUN_POWERSHELL, arguments: {} } }]
+        : undefined,
+    };
   }
 
   // Step 3: Approve Command
@@ -461,24 +925,30 @@ function MainApp() {
     try {
       const output = await api.executePowershell(pendingCommand, explorerState?.path || null);
 
-      const newMsg: Message = { role: "tool", content: output };
-      const newHistory = [...chatHistory, newMsg];
+      const newHistory = [...chatHistory, buildToolResult(output)];
+      pendingCommandToolId.current = undefined;
       setChatHistory(newHistory);
       setPendingCommand(null);
       setIsExecuting(false);
 
       setIsProcessing(true);
       await runAgentStep(newHistory, continueAuto || autoExecute);
-
     } catch (e) {
       console.error(`Command Execution Failed: ${e}`);
+      showError(`Command execution failed: ${String(e)}`);
       setIsExecuting(false);
       setIsProcessing(false);
     }
   }
 
   function rejectCommand(feedback: string) {
-    const newHistory: Message[] = [...chatHistory, { role: "user" as const, content: `I don't want to run that command. ${feedback}` }];
+    // Answer the tool_use with the rejection as its result (keeps the
+    // assistant tool_use / tool_result pairing valid), then continue.
+    const rejection = feedback.trim()
+      ? `[User rejected the command] ${feedback.trim()}`
+      : "[User rejected the command without additional feedback.]";
+    const newHistory: Message[] = [...chatHistory, buildToolResult(rejection)];
+    pendingCommandToolId.current = undefined;
     setChatHistory(newHistory);
     setPendingCommand(null);
     setIsProcessing(true);
@@ -486,39 +956,284 @@ function MainApp() {
   }
 
   function dismissCommand() {
+    // Record the dismissal as a tool_result so the orphaned tool_use is
+    // answered, then stop and wait for the user. Without this, the next turn
+    // would send an unanswered tool_use to Anthropic and 400.
+    if (pendingCommandToolId.current !== undefined) {
+      setChatHistory((prev) => [
+        ...prev,
+        buildToolResult("[User dismissed the proposed command without running it.]"),
+      ]);
+      pendingCommandToolId.current = undefined;
+    }
     setPendingCommand(null);
     setIsProcessing(false);
   }
 
-  function toggleExpand(idx: number) {
-    setExpandedResponses(prev => ({ ...prev, [idx]: !prev[idx] }));
-  }
+  // Stable identity so the memoized ChatMessage rows don't re-render on every
+  // streaming token (each token re-renders MainApp; without a stable onToggle
+  // the memo boundary would be defeated).
+  const toggleExpand = useCallback((idx: number) => {
+    setExpandedResponses((prev) => ({ ...prev, [idx]: !prev[idx] }));
+  }, []);
 
-  const handleAntigravityLogin = async () => {
+  // Refresh on Settings open — pulls latest skills, model list, key state.
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    Promise.all([
+      fetchModels(),
+      api
+        .listSkills()
+        .then((r) => {
+          setSkills(r.skills);
+          setQuarantinedSkills(r.quarantined);
+        })
+        .catch(() => {}),
+    ]).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSettingsOpen]);
+
+  const handleToggleShowFreeOpenrouterModels = async () => {
+    const next = !showFreeOpenrouterModels;
     try {
-      const email = await api.loginAntigravity();
-      setAntigravityEmail(email);
+      await api.setShowFreeOpenrouterModels(next);
+      setShowFreeOpenrouterModels(next);
+      fetchModels();
     } catch (e) {
-      showError("Login Failed: " + String(e));
+      showError("Failed to toggle free-tier models: " + String(e));
     }
   };
 
-  const saveApiKeys = async () => {
+  const handleDismissMigrationBanner = async () => {
+    setShowMigrationBanner(false);
     try {
-      await api.setOpenaiKey(openaiKey);
-      await api.setGeminiKey(geminiKey);
+      await api.setOpenrouterDisclosureAck(true);
+    } catch {
+      // ignore — banner just won't re-suppress on next launch
+    }
+  };
+
+  const handleOpenSettingsFromBanner = async () => {
+    await handleDismissMigrationBanner();
+    setIsSettingsOpen(true);
+  };
+
+  const handleSettingsSave = async () => {
+    try {
+      await api.setOllamaUrl(tempOllamaUrl);
+      setOllamaUrl(tempOllamaUrl);
+      setOllamaConnected(null);
+      if (openrouterKey.trim()) await api.setOpenrouterKey(openrouterKey.trim());
+      if (anthropicKey.trim()) await api.setAnthropicKey(anthropicKey.trim());
+      // Clear the edit-session plaintext so it's not retained in renderer state
+      // after save. Refresh the masked preview so the placeholder updates.
+      setOpenrouterKey("");
+      setAnthropicKey("");
+      try {
+        const keys = await api.getApiKeys();
+        setOpenrouterPreview(keys.openrouter_preview);
+        setAnthropicPreview(keys.anthropic_preview);
+      } catch {
+        // ignore — placeholder will refresh on next Settings open
+      }
       setIsSettingsOpen(false);
       fetchModels();
     } catch (e) {
-      showError("Failed to save keys: " + String(e));
+      showError("Failed to save settings: " + String(e));
     }
   };
 
+  // --- Sessions ---
+
+  async function handleNewChat() {
+    await flushSave();
+    await hardResetSessionUi();
+    setChatHistory([]);
+    setCurrentSessionId(null);
+    lastSyncedContext.current = null;
+    setSyncPending(false);
+    refreshSessions();
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  async function handleSelectSession(id: string) {
+    if (id === currentSessionId) return;
+    try {
+      await flushSave();
+      await hardResetSessionUi();
+      const session = await loadSessionFromStore(id);
+      setChatHistory(session.messages);
+      setModelName(session.model);
+      // Synthesize an ExplorerState from the session's saved context so the
+      // toolbar reflects what the user was working on. The real Explorer may
+      // have moved on; the user can press Sync to refresh.
+      setExplorerState({
+        path: session.explorer_path,
+        selected_files: [],
+      });
+      lastSyncedContext.current = {
+        path: session.explorer_path,
+        files: [],
+      };
+      setSyncPending(false);
+    } catch (e) {
+      showError(`Failed to load session: ${String(e)}`);
+    }
+  }
+
+  async function handleDeleteSession(id: string) {
+    try {
+      await deleteSessionFromStore(id);
+      if (id === currentSessionId) {
+        setChatHistory([]);
+        setExplorerState(null);
+        await hardResetSessionUi();
+      }
+    } catch (e) {
+      showError(`Failed to delete session: ${String(e)}`);
+    }
+  }
+
+  async function handleRenameSession(id: string, title: string) {
+    try {
+      await renameSessionInStore(id, title);
+    } catch (e) {
+      showError(`Failed to rename session: ${String(e)}`);
+    }
+  }
+
+  /**
+   * Continue affordance — shown when the model stopped on a prose response
+   * without emitting a tool_call, code block, OR "Task Complete". Weak local
+   * models (Gemma, small Llamas via Ollama) often respond with "I'll use
+   * ffmpeg..." and stall there. Clicking Continue appends a synthetic nudge
+   * and re-runs the agent.
+   */
+  async function handleContinueAgent() {
+    if (chatHistory.length === 0) return;
+    const last = chatHistory[chatHistory.length - 1];
+    if (!last || last.role !== "assistant") return;
+    const nudge: Message = {
+      role: "user",
+      content:
+        "Continue. You stopped without actually generating the command. Now emit the run_powershell tool call directly, OR write the complete PowerShell script inside a ```powershell code block. Do not explain again — produce the code.",
+      synthetic: true,
+    };
+    const newHistory: Message[] = [...chatHistory, nudge];
+    setChatHistory(newHistory);
+    setIsProcessing(true);
+    await runAgentStep(newHistory);
+  }
+
+  // Should we show the "Continue" affordance?
+  const shouldShowContinue = (() => {
+    if (
+      isProcessing ||
+      isExecuting ||
+      streamingText.length > 0 ||
+      pendingCommand !== null ||
+      pendingQuestion !== null
+    ) {
+      return false;
+    }
+    if (chatHistory.length === 0) return false;
+    const last = chatHistory[chatHistory.length - 1];
+    if (!last || last.role !== "assistant") return false;
+    if (last.tool_calls && last.tool_calls.length > 0) return false;
+    const lastContent = last.content ?? "";
+    if (isTaskComplete(lastContent)) return false;
+    // Don't suggest Continue if the last message looks like a question to
+    // the user — the model is waiting on their reply, not stalled.
+    if (lastContent.trim().endsWith("?")) return false;
+    return true;
+  })();
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isSettingsOpen]);
+
   return (
     <main className="flex flex-col h-screen text-gray-100 font-sans overflow-hidden">
-      <div className="flex flex-col h-full bg-gray-950">
-
       <TitleBar />
+      <div className="flex flex-1 overflow-hidden bg-gray-950">
+        <SessionsSidebar
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
+          onNewChat={handleNewChat}
+          onSelect={handleSelectSession}
+          onDelete={handleDeleteSession}
+          onRename={handleRenameSession}
+        />
+        <div className="flex flex-col flex-1 min-w-0 relative">
+
+      {killDialog && (
+        <div className="absolute inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-150">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl max-w-md w-full p-6 animate-in zoom-in-95 duration-150">
+            <h3 className="text-base font-semibold text-gray-100 mb-2">
+              A command is still running
+            </h3>
+            <p className="text-sm text-gray-400 mb-3">
+              The LLM stream was stopped, but a PowerShell process is still running on your system. Do you want to kill it?
+            </p>
+            <div className="bg-black/50 border border-gray-800 rounded-md p-3 mb-4 max-h-32 overflow-y-auto">
+              <code className="text-xs text-gray-300 break-all whitespace-pre-wrap font-mono">
+                {killDialog.command}
+              </code>
+              <div className="text-[10px] text-gray-600 mt-2">
+                PID: {killDialog.pid}
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setKillDialog(null)}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 rounded-md text-sm font-medium transition"
+              >
+                Keep running
+              </button>
+              <button
+                onClick={confirmKill}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-md text-sm font-medium transition"
+              >
+                Kill process
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isSettingsOpen && (
+        <SettingsPage
+          ollamaUrl={tempOllamaUrl}
+          onOllamaUrlChange={setTempOllamaUrl}
+          openrouterKey={openrouterKey}
+          anthropicKey={anthropicKey}
+          onOpenrouterKeyChange={setOpenrouterKey}
+          onAnthropicKeyChange={setAnthropicKey}
+          openrouterPreview={openrouterPreview}
+          anthropicPreview={anthropicPreview}
+          showFreeOpenrouterModels={showFreeOpenrouterModels}
+          onToggleShowFreeOpenrouterModels={handleToggleShowFreeOpenrouterModels}
+          skills={skills}
+          quarantinedSkills={quarantinedSkills}
+          onSave={handleSettingsSave}
+          onClose={() => setIsSettingsOpen(false)}
+        />
+      )}
+
+      {showMigrationBanner && !isSettingsOpen && (
+        <MigrationBanner
+          onOpenSettings={handleOpenSettingsFromBanner}
+          onDismiss={handleDismissMigrationBanner}
+          onError={showError}
+        />
+      )}
 
       {/* Toolbar */}
       <div className="flex-none h-10 bg-gray-900/50 border-b border-gray-800 flex items-center px-3 gap-2">
@@ -587,13 +1302,7 @@ function MainApp() {
         <div className="flex items-center gap-1">
           {chatHistory.length > 0 && (
             <button
-              onClick={() => {
-                setChatHistory([]);
-                setPendingCommand(null);
-                setExpandedResponses({});
-                setIsProcessing(false);
-                setIsExecuting(false);
-              }}
+              onClick={handleNewChat}
               className="p-1.5 rounded-md text-gray-500 hover:text-gray-300 hover:bg-gray-800/50 transition"
               title="New Chat"
             >
@@ -601,163 +1310,16 @@ function MainApp() {
             </button>
           )}
 
-          <div className="relative">
-            <button
-              onClick={() => {
-                setTempOllamaUrl(ollamaUrl);
-                setIsSettingsOpen(!isSettingsOpen);
-              }}
-              className={`p-1.5 rounded-md transition ${isSettingsOpen ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'}`}
-              title="Settings"
-            >
-              <Settings size={16} />
-            </button>
-
-            {isSettingsOpen && (
-              <div className="absolute top-full right-0 mt-2 z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-4 min-w-72 animate-in fade-in slide-in-from-top-2 duration-150">
-                <div className="text-[10px] text-gray-500 uppercase font-bold tracking-wider mb-3">Settings</div>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs text-gray-400 mb-1">Ollama Server URL</label>
-                    <input
-                      type="text"
-                      value={tempOllamaUrl}
-                      onChange={(e) => setTempOllamaUrl(e.target.value)}
-                      className="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500"
-                      placeholder="http://localhost:11434"
-                    />
-                  </div>
-                  <div className="pt-2 border-t border-gray-800">
-                    <label className="block text-xs text-gray-400 mb-1">Antigravity Access</label>
-                    {antigravityEmail ? (
-                      <div className="flex items-center justify-between bg-emerald-900/20 border border-emerald-500/30 rounded px-2 py-1.5">
-                        <span className="text-xs text-emerald-400 truncate max-w-[180px]" title={antigravityEmail}>{antigravityEmail}</span>
-                        <Bot size={12} className="text-emerald-500" />
-                      </div>
-                    ) : (
-                      <button
-                        onClick={handleAntigravityLogin}
-                        className="w-full py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-600 rounded text-xs transition flex items-center justify-center gap-2"
-                      >
-                        <Bot size={12} />
-                        Login with Google
-                      </button>
-                    )}
-                  </div>
-                  <div className="pt-2 border-t border-gray-800 space-y-2">
-                    <div>
-                      <label className="block text-xs text-gray-400 mb-1">OpenAI API Key</label>
-                      <input
-                        type="password"
-                        value={openaiKey}
-                        onChange={(e) => setOpenaiKey(e.target.value)}
-                        className="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500"
-                        placeholder="sk-..."
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-gray-400 mb-1">Gemini API Key</label>
-                      <input
-                        type="password"
-                        value={geminiKey}
-                        onChange={(e) => setGeminiKey(e.target.value)}
-                        className="w-full bg-black/40 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-200 focus:outline-none focus:border-indigo-500"
-                        placeholder="AIza..."
-                      />
-                    </div>
-                  </div>
-                  {cliCredentials && (
-                    <div className="pt-2 border-t border-gray-800 space-y-1.5">
-                      <label className="block text-xs text-gray-400 mb-1">CLI Providers</label>
-                      <div className={`flex items-center justify-between px-2 py-1.5 rounded text-xs ${
-                        cliCredentials.claude_code
-                          ? 'bg-emerald-900/20 border border-emerald-500/20'
-                          : 'bg-gray-800/50 border border-gray-700/50'
-                      }`}>
-                        <span className={cliCredentials.claude_code ? 'text-emerald-400' : 'text-gray-500'}>
-                          Claude Code
-                        </span>
-                        {cliCredentials.claude_code ? (
-                          <CheckCircle size={12} className="text-emerald-500" />
-                        ) : (
-                          <span className="text-[10px] text-gray-600">Not found</span>
-                        )}
-                      </div>
-                      <div className={`flex items-center justify-between px-2 py-1.5 rounded text-xs ${
-                        cliCredentials.codex
-                          ? 'bg-emerald-900/20 border border-emerald-500/20'
-                          : 'bg-gray-800/50 border border-gray-700/50'
-                      }`}>
-                        <span className={cliCredentials.codex ? 'text-emerald-400' : 'text-gray-500'}>
-                          Codex CLI
-                        </span>
-                        {cliCredentials.codex ? (
-                          <CheckCircle size={12} className="text-emerald-500" />
-                        ) : (
-                          <span className="text-[10px] text-gray-600">Not found</span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {skills.length > 0 && (
-                    <div className="pt-2 border-t border-gray-800 space-y-1.5">
-                      <label className="block text-xs text-gray-400 mb-1">Skills</label>
-                      {skills.map((skill) => (
-                        <div
-                          key={skill.metadata.name}
-                          className={`flex items-center justify-between px-2 py-1.5 rounded text-xs ${
-                            skill.available
-                              ? 'bg-emerald-900/20 border border-emerald-500/20'
-                              : 'bg-gray-800/50 border border-gray-700/50'
-                          }`}
-                        >
-                          <div className="flex flex-col">
-                            <span className={skill.available ? 'text-emerald-400' : 'text-gray-500'}>
-                              {skill.metadata.name}
-                            </span>
-                            <span className="text-[10px] text-gray-600">{skill.metadata.description}</span>
-                          </div>
-                          {skill.available ? (
-                            <CheckCircle size={12} className="text-emerald-500 shrink-0" />
-                          ) : (
-                            <div className="flex items-center gap-1 shrink-0">
-                              <XCircle size={12} className="text-gray-600" />
-                              <span className="text-[10px] text-gray-600">
-                                {skill.missing_bins.join(', ')}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex gap-2 pt-1 border-t border-gray-800 mt-2">
-                    <button
-                      onClick={async () => {
-                        try {
-                          await api.setOllamaUrl(tempOllamaUrl);
-                          setOllamaUrl(tempOllamaUrl);
-                          await saveApiKeys();
-                          setOllamaConnected(null);
-                        } catch (err) {
-                          console.error("Failed to save URL:", err);
-                        }
-                      }}
-                      className="flex-1 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-medium transition"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={() => setIsSettingsOpen(false)}
-                      className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 border border-gray-700 rounded text-xs font-medium transition"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          <button
+            onClick={() => {
+              setTempOllamaUrl(ollamaUrl);
+              setIsSettingsOpen(!isSettingsOpen);
+            }}
+            className={`p-1.5 rounded-md transition ${isSettingsOpen ? 'bg-gray-800 text-gray-200' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'}`}
+            title="Settings"
+          >
+            <Settings size={16} />
+          </button>
         </div>
       </div>
 
@@ -814,7 +1376,8 @@ function MainApp() {
         )}
       </div>
 
-      {/* Chat Area */}
+      {/* Chat Area — stop button moved into ChatInput so it replaces send
+          while busy (Claude.ai pattern). No more overlay covering messages. */}
       <section className="flex-1 flex flex-col relative overflow-hidden">
         {chatHistory.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center opacity-30 select-none">
@@ -857,19 +1420,40 @@ function MainApp() {
                   <Loader2 className="animate-spin" size={12} />
                   <span>{isExecuting ? 'Executing command...' : 'Thinking...'}</span>
                 </div>
-                <button
-                  onClick={stopAgent}
-                  className="ml-2 p-1 rounded text-red-500 hover:bg-red-500/20 hover:text-red-400 transition"
-                  title="Stop agent"
-                >
-                  <StopCircle size={16} />
-                </button>
               </div>
             )}
             <div ref={chatEndRef} />
           </div>
         )}
       </section>
+
+      {pendingQuestion && (
+        <QuestionApproval
+          question={pendingQuestion}
+          onAnswer={answerQuestion}
+          onDismiss={dismissQuestion}
+          disabled={isProcessing}
+        />
+      )}
+
+      {shouldShowContinue && (
+        <div className="flex-none px-3 pb-2">
+          <div className="max-w-3xl mx-auto flex items-center gap-2 px-3 py-2 bg-amber-900/15 border border-amber-500/30 rounded-md">
+            <span className="text-[11px] text-amber-200/80 flex-1 leading-snug">
+              The agent stopped without acting. If this isn't a final answer,
+              push it to emit the command.
+            </span>
+            <button
+              onClick={handleContinueAgent}
+              className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-medium transition inline-flex items-center gap-1 shrink-0"
+              title="Inject a 'now emit the code' nudge and re-run the agent"
+            >
+              <RefreshCw size={10} />
+              Continue
+            </button>
+          </div>
+        </div>
+      )}
 
       {pendingCommand && (
         <CommandApproval
@@ -883,19 +1467,54 @@ function MainApp() {
         />
       )}
 
+      {queuedPrompts.length > 0 && (
+        <div className="flex-none border-t border-gray-800 px-3 py-2 bg-gray-900/30">
+          <div className="max-w-3xl mx-auto flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mr-1">
+              Queued
+            </span>
+            {queuedPrompts.map((q, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1.5 bg-indigo-900/30 border border-indigo-500/30 text-indigo-200 text-xs rounded-full pl-3 pr-1 py-0.5 max-w-xs"
+                title={q}
+              >
+                <span className="truncate">{q}</span>
+                <button
+                  onClick={() => removeQueuedPrompt(i)}
+                  className="w-4 h-4 flex items-center justify-center rounded-full hover:bg-indigo-700/40 text-indigo-300"
+                  title="Remove from queue"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <ChatInput
         ref={inputRef}
         prompt={agentPrompt}
         onChange={setAgentPrompt}
-        onSubmit={startAgent}
-        disabled={isProcessing || isExecuting || pendingCommand !== null}
+        onSubmit={submitOrQueue}
+        disabled={false}
         hasPendingCommand={pendingCommand !== null}
         modelName={modelName}
         onModelChange={setModelName}
         models={availableModels}
         ollamaConnected={ollamaConnected}
+        isBusy={
+          (isProcessing || isExecuting || streamingText.length > 0) &&
+          !pendingCommand &&
+          !pendingQuestion
+        }
+        onStop={stopAgent}
+        onRefreshModels={refreshModels}
+        isRefreshingModels={isRefreshingModels}
       />
 
+        </div>
       </div>
 
       <ErrorToast message={error} onDismiss={clearError} />

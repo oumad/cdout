@@ -1,3 +1,4 @@
+pub mod ask_user_question;
 pub mod powershell;
 
 use crate::llm::{ToolDefinition, ToolFunction};
@@ -85,6 +86,7 @@ impl ToolRegistry {
 pub fn build_default_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(powershell::PowerShellTool));
+    registry.register(Box::new(ask_user_question::AskUserQuestionTool));
     registry
 }
 
@@ -104,11 +106,16 @@ mod tests {
     fn test_registry_definitions() {
         let registry = build_default_registry();
         let defs = registry.definitions();
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].function.name, "run_powershell");
-        assert_eq!(defs[0].r#type, "function");
+        let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
+        assert!(names.contains(&"run_powershell"));
+        assert!(names.contains(&"ask_user_question"));
+        let ps = defs
+            .iter()
+            .find(|d| d.function.name == "run_powershell")
+            .unwrap();
+        assert_eq!(ps.r#type, "function");
         // Schema should have "command" as a required property
-        let params = &defs[0].function.parameters;
+        let params = &ps.function.parameters;
         assert_eq!(params["required"][0], "command");
         assert_eq!(params["properties"]["command"]["type"], "string");
     }
