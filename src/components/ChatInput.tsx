@@ -1,5 +1,5 @@
 import { forwardRef } from "react";
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Square, RefreshCw } from "lucide-react";
 import { ModelSelector } from "./ModelSelector";
 
 interface ChatInputProps {
@@ -12,6 +12,16 @@ interface ChatInputProps {
   onModelChange: (model: string) => void;
   models: string[];
   ollamaConnected: boolean | null;
+  /**
+   * When true, the send button is replaced by a Stop button which calls
+   * `onStop`. Matches the Claude.ai / ChatGPT pattern and stops the Stop
+   * overlay from covering the chat area.
+   */
+  isBusy?: boolean;
+  onStop?: () => void;
+  /** When provided, shows a small "refresh model list" icon next to the picker. */
+  onRefreshModels?: () => void;
+  isRefreshingModels?: boolean;
 }
 
 export const ChatInput = forwardRef<HTMLInputElement, ChatInputProps>(
@@ -26,6 +36,10 @@ export const ChatInput = forwardRef<HTMLInputElement, ChatInputProps>(
       onModelChange,
       models,
       ollamaConnected,
+      isBusy = false,
+      onStop,
+      onRefreshModels,
+      isRefreshingModels = false,
     },
     ref
   ) {
@@ -38,7 +52,9 @@ export const ChatInput = forwardRef<HTMLInputElement, ChatInputProps>(
             placeholder={
               hasPendingCommand
                 ? "Approve command above..."
-                : "Ask me anything..."
+                : isBusy
+                  ? "Agent is working… you can type while it runs"
+                  : "Ask me anything..."
             }
             value={prompt}
             onChange={(e) => onChange(e.target.value)}
@@ -48,29 +64,58 @@ export const ChatInput = forwardRef<HTMLInputElement, ChatInputProps>(
             disabled={disabled}
             autoFocus
           />
-          <div className="flex items-center justify-end gap-2 px-3 pb-2">
-            <ModelSelector
-              modelName={modelName}
-              onChange={onModelChange}
-              models={models}
-              connected={ollamaConnected}
-              disabled={disabled}
-              className={`text-[11px] rounded px-1 py-0.5 ${
-                ollamaConnected === false
-                  ? "text-red-400"
-                  : models.length === 0
-                    ? "text-amber-400"
-                    : "text-gray-500 hover:text-gray-400"
-              }`}
-            />
-            <button
-              onClick={onSubmit}
-              disabled={disabled || !prompt.trim()}
-              className="w-7 h-7 flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition disabled:opacity-30 disabled:hover:bg-indigo-600"
-              title="Send"
-            >
-              <ArrowUp size={16} strokeWidth={2.5} />
-            </button>
+          <div className="flex items-center justify-end gap-2 px-3 pb-2 min-w-0">
+            <div className="flex items-center gap-1 min-w-0 max-w-[60%]">
+              <ModelSelector
+                modelName={modelName}
+                onChange={onModelChange}
+                models={models}
+                connected={ollamaConnected}
+                disabled={disabled}
+                maxDisplayChars={32}
+                className={`text-[11px] rounded px-1 py-0.5 truncate min-w-0 ${
+                  ollamaConnected === false
+                    ? "text-red-400"
+                    : models.length === 0
+                      ? "text-amber-400"
+                      : "text-gray-500 hover:text-gray-400"
+                }`}
+              />
+              {onRefreshModels && (
+                <button
+                  type="button"
+                  onClick={onRefreshModels}
+                  disabled={isRefreshingModels}
+                  className="p-1 rounded text-gray-600 hover:text-gray-300 hover:bg-gray-800/60 transition disabled:opacity-40 shrink-0"
+                  title="Refresh model list"
+                >
+                  <RefreshCw
+                    size={10}
+                    className={isRefreshingModels ? "animate-spin" : ""}
+                  />
+                </button>
+              )}
+            </div>
+            {isBusy && onStop ? (
+              <button
+                type="button"
+                onClick={onStop}
+                className="w-7 h-7 flex items-center justify-center rounded-lg bg-red-600 hover:bg-red-500 text-white transition animate-in zoom-in-95 duration-150"
+                title="Stop"
+              >
+                <Square size={12} strokeWidth={2.5} fill="white" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onSubmit}
+                disabled={disabled || !prompt.trim()}
+                className="w-7 h-7 flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition disabled:opacity-30 disabled:hover:bg-indigo-600"
+                title="Send"
+              >
+                <ArrowUp size={16} strokeWidth={2.5} />
+              </button>
+            )}
           </div>
         </div>
       </div>

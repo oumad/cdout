@@ -3,6 +3,59 @@ use crate::llm::{FunctionCall, Message, ToolCall, ToolDefinition};
 use serde_json::json;
 use std::pin::pin;
 
+/// Anthropic allows up to 4 `cache_control` breakpoints per request. The system
+/// block consumes one, leaving 3 for rolling tool_result breakpoints across turns.
+const MAX_TOOL_RESULT_CACHE_BREAKPOINTS: usize = 3;
+
+/// Server-side compaction (anthropic-beta: compact-2026-01-12) is supported on
+/// 4.6+ Sonnet/Opus and 4.5+ Haiku. Older models error if the header is sent.
+fn supports_compaction(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("claude-opus-4-6")
+        || m.contains("claude-opus-4-7")
+        || m.contains("claude-opus-4-8")
+        || m.contains("claude-sonnet-4-6")
+        || m.contains("claude-sonnet-4-7")
+        || m.contains("claude-sonnet-4-8")
+        || m.contains("claude-haiku-4-5")
+        || m.contains("claude-haiku-4-6")
+}
+
+/// Stamp `cache_control: ephemeral` on the last N tool_result blocks across
+/// `api_messages`. As the conversation grows the breakpoints move forward,
+/// so each new turn finds the previous turn's prefix still cached.
+fn add_cache_breakpoints_to_tool_results(messages: &mut [serde_json::Value], max: usize) {
+    let mut tool_result_indices: Vec<(usize, usize)> = Vec::new();
+    for (msg_idx, msg) in messages.iter().enumerate() {
+        if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
+            for (block_idx, block) in content.iter().enumerate() {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                    tool_result_indices.push((msg_idx, block_idx));
+                }
+            }
+        }
+    }
+
+    let to_stamp: Vec<(usize, usize)> = tool_result_indices
+        .into_iter()
+        .rev()
+        .take(max)
+        .collect();
+
+    for (msg_idx, block_idx) in to_stamp {
+        if let Some(content) = messages[msg_idx]
+            .get_mut("content")
+            .and_then(|c| c.as_array_mut())
+        {
+            if let Some(block) = content.get_mut(block_idx) {
+                if let Some(obj) = block.as_object_mut() {
+                    obj.insert("cache_control".to_string(), json!({"type": "ephemeral"}));
+                }
+            }
+        }
+    }
+}
+
 pub async fn chat_anthropic_stream(
     model: &str,
     messages: Vec<Message>,
@@ -10,10 +63,11 @@ pub async fn chat_anthropic_stream(
     tools: Option<Vec<ToolDefinition>>,
     callback: impl Fn(String) + Send + 'static,
 ) -> Result<Message, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+    // Use the shared connection-pooled client. The old per-call builder set a
+    // 120s global timeout, which would kill long streaming responses; the
+    // shared client has no global timeout — per-chunk idle is enforced by
+    // `stream_util::next_chunk_with_timeout` instead.
+    let client = crate::llm::http::shared_client();
 
     // Separate system message from the rest
     let mut system_text = String::new();
@@ -63,15 +117,30 @@ pub async fn chat_anthropic_stream(
                 }));
             }
             "tool" => {
-                // Tool results — correlate with the preceding tool_use id.
-                // If the message carries a tool_call with an id, use it directly.
-                // Otherwise fall back to scanning the last assistant message.
-                let tool_use_id = msg
+                // Tool results — correlate with the preceding tool_use id. If
+                // the message carries a tool_call with an id, use it directly.
+                // Otherwise scan the last assistant message; if there is no
+                // preceding tool_use at all, fail loudly rather than fabricate
+                // a bogus id that Anthropic 400s on with cryptic wording.
+                let tool_use_id = match msg
                     .tool_calls
                     .as_ref()
                     .and_then(|tc| tc.first())
                     .and_then(|tc| tc.id.clone())
-                    .unwrap_or_else(|| find_last_tool_use_id(&api_messages));
+                {
+                    Some(id) => id,
+                    None => match find_last_tool_use_id(&api_messages) {
+                        Some(id) => id,
+                        None => {
+                            return Err(
+                                "Conversation has a tool_result with no preceding tool_use. \
+                                 This is a client-side correlation bug — please file a report \
+                                 with the failing prompt."
+                                    .to_string(),
+                            );
+                        }
+                    },
+                };
                 api_messages.push(json!({
                     "role": "user",
                     "content": [{
@@ -104,6 +173,12 @@ pub async fn chat_anthropic_stream(
             .collect()
     });
 
+    // Rolling cache breakpoints: stamp the most recent tool_result blocks so
+    // each subsequent turn finds the previous prefix already cached.
+    add_cache_breakpoints_to_tool_results(&mut api_messages, MAX_TOOL_RESULT_CACHE_BREAKPOINTS);
+
+    let compaction_enabled = supports_compaction(model);
+
     let mut body = json!({
         "model": model,
         "messages": api_messages,
@@ -125,31 +200,36 @@ pub async fn chat_anthropic_stream(
         body["tools"] = json!(tools);
     }
 
-    // Detect OAuth token (sk-ant-oat-*) vs API key (sk-ant-api-*)
-    let is_oauth = access_token.contains("sk-ant-oat");
+    if compaction_enabled {
+        // Server-side context compaction: when the request exceeds 50k input tokens,
+        // Anthropic compresses earlier turns into a summary so the agent keeps running
+        // without client-side history management.
+        body["context_management"] = json!({
+            "edits": [{
+                "type": "compact_20260112",
+                "trigger": { "type": "input_tokens", "value": 50_000 }
+            }]
+        });
+    }
 
-    let mut req = client
+    // Direct Anthropic path is API-key-only. The Claude Code OAuth shortcut
+    // was removed in the OpenRouter migration: Anthropic's anti-abuse
+    // throttling on consumer OAuth (the bare "Error" 429s shuttle-io kept
+    // hitting) wasn't worth keeping alive. Users who want frontier Claude
+    // models go through OpenRouter; users who want prompt caching paste a
+    // real API key (sk-ant-api-*) into Settings.
+    let beta_header = if compaction_enabled {
+        "prompt-caching-2024-07-31,compact-2026-01-12"
+    } else {
+        "prompt-caching-2024-07-31"
+    };
+
+    let req = client
         .post("https://api.anthropic.com/v1/messages")
         .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json");
-
-    if is_oauth {
-        // OAuth tokens need Bearer auth + Claude Code identity headers
-        req = req
-            .header("Authorization", format!("Bearer {}", access_token))
-            .header(
-                "anthropic-beta",
-                "claude-code-20250219,oauth-2025-04-20,prompt-caching-2024-07-31",
-            )
-            .header("user-agent", "claude-cli/2.1.62")
-            .header("x-app", "cli")
-            .header("anthropic-dangerous-direct-browser-access", "true");
-    } else {
-        // Standard API key auth
-        req = req
-            .header("x-api-key", access_token)
-            .header("anthropic-beta", "prompt-caching-2024-07-31");
-    }
+        .header("content-type", "application/json")
+        .header("x-api-key", access_token)
+        .header("anthropic-beta", beta_header);
 
     let res = req
         .json(&body)
@@ -162,7 +242,8 @@ pub async fn chat_anthropic_stream(
         let text = res.text().await.unwrap_or_default();
         if status.as_u16() == 401 {
             return Err(
-                "Anthropic Auth Error: Token expired or invalid. Run `claude` to refresh your session.".to_string(),
+                "Anthropic Auth Error: API key invalid or expired. Update it in Settings → Cloud Providers."
+                    .to_string(),
             );
         }
         return Err(format!("Anthropic API Error ({}): {}", status, text));
@@ -272,21 +353,25 @@ pub async fn chat_anthropic_stream(
         } else {
             Some(tool_calls)
         },
+        synthetic: false,
     })
 }
 
-/// Find the last tool_use block's id in the api_messages for tool_result correlation
-fn find_last_tool_use_id(api_messages: &[serde_json::Value]) -> String {
+/// Find the last tool_use block's id in api_messages for tool_result correlation.
+/// Returns `None` if there is no preceding tool_use — callers can use this to
+/// produce a clear error instead of fabricating an id that Anthropic will
+/// reject with HTTP 400 ("tool_use_id not found").
+fn find_last_tool_use_id(api_messages: &[serde_json::Value]) -> Option<String> {
     for msg in api_messages.iter().rev() {
         if let Some(content) = msg.get("content").and_then(|c| c.as_array()) {
             for block in content.iter().rev() {
                 if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                     if let Some(id) = block.get("id").and_then(|i| i.as_str()) {
-                        return id.to_string();
+                        return Some(id.to_string());
                     }
                 }
             }
         }
     }
-    "toolu_0".to_string() // fallback
+    None
 }

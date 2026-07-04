@@ -1,18 +1,43 @@
-use crate::constants::{
-    COMPLETION_KEYWORDS, INTENT_PHRASES, MAX_NUDGE_ATTEMPTS, SHORT_EXPLANATION_LIMIT, TOOL_NAME,
-};
+use crate::constants::{ASK_USER_QUESTION_TOOL, COMPLETION_KEYWORDS, TOOL_NAME};
+use crate::features::loop_detector::{self, LoopVerdict};
+use crate::llm::history;
+use crate::llm::retry::{classify, ErrorClass};
 use crate::llm::router;
 use crate::llm::{Message, StreamChunk};
 use crate::tools::{self, ToolRegistry};
 use serde::{Deserialize, Serialize};
 
+/// How many times to attempt history recovery (trim + retry) before bailing.
+const MAX_CONTEXT_RECOVERY_ATTEMPTS: usize = 2;
+
 // --- Types ---
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QuestionOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct QuestionData {
+    pub question: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub options: Vec<QuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ToolProposal {
     pub tool_name: String,
+    /// For run_powershell: the PowerShell script. For ask_user_question: the question text.
     pub command: String,
     pub tool_call_id: Option<String>,
+    /// Present only for ask_user_question — drives the multiple-choice UI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question_data: Option<QuestionData>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -29,6 +54,10 @@ pub enum AgentResponse {
 pub struct AgentStepResult {
     pub response: AgentResponse,
     pub updated_history: Vec<Message>,
+    /// Loop-detector signal attached when a tool proposal is the response.
+    /// Frontend should pause auto-execute when verdict.should_pause_auto_execute().
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loop_verdict: Option<LoopVerdict>,
 }
 
 // --- Extraction helpers ---
@@ -65,16 +94,32 @@ fn extract_tool_proposals(msg: &Message, registry: &ToolRegistry) -> Vec<ToolPro
             continue;
         }
 
+        if call.function.name == ASK_USER_QUESTION_TOOL {
+            // ask_user_question carries structured options instead of a command string.
+            let qd: QuestionData =
+                match serde_json::from_value(call.function.arguments.clone()) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        eprintln!("Failed to parse ask_user_question arguments: {}", e);
+                        continue;
+                    }
+                };
+            proposals.push(ToolProposal {
+                tool_name: call.function.name.clone(),
+                command: qd.question.clone(),
+                tool_call_id: call.id.clone(),
+                question_data: Some(qd),
+            });
+            continue;
+        }
+
         // Extract the human-readable command for the approval UI
         let display_command = call
             .function
             .arguments
             .get("command")
             .and_then(|v| v.as_str())
-            .unwrap_or_else(|| {
-                // Fallback: show the full JSON arguments
-                ""
-            });
+            .unwrap_or("");
 
         if display_command.is_empty() {
             continue;
@@ -84,6 +129,7 @@ fn extract_tool_proposals(msg: &Message, registry: &ToolRegistry) -> Vec<ToolPro
             tool_name: call.function.name.clone(),
             command: display_command.to_string(),
             tool_call_id: call.id.clone(),
+            question_data: None,
         });
     }
     proposals
@@ -138,219 +184,191 @@ fn is_success_summary(content_lower: &str) -> bool {
         .any(|kw| content_lower.contains(kw))
 }
 
-fn should_nudge(content: &str, content_lower: &str) -> bool {
-    let has_intent = INTENT_PHRASES.iter().any(|p| content_lower.contains(p));
-    let is_short_explanation =
-        content.len() < SHORT_EXPLANATION_LIMIT && !content_lower.contains("```");
-    let not_complete = !is_success_summary(content_lower)
-        && !content_lower.contains("error")
-        && !content_lower.contains("fail");
+/// Pick the proposal we should surface to the user when the model emitted
+/// multiple in a single turn. ask_user_question always wins — if the model is
+/// asking for clarification, that pauses the loop regardless of any sibling
+/// run_powershell proposal.
+fn select_proposal(proposals: &[ToolProposal]) -> Option<&ToolProposal> {
+    proposals
+        .iter()
+        .find(|p| p.tool_name == ASK_USER_QUESTION_TOOL)
+        .or_else(|| proposals.first())
+}
 
-    (has_intent || is_short_explanation) && not_complete
+/// Record the selected proposal in the global LoopDetector and return its
+/// verdict. ask_user_question is excluded — clarification breaks loops by
+/// definition, recording it would poison the no-progress detector.
+fn detect_loop(proposal: &ToolProposal) -> Option<LoopVerdict> {
+    if proposal.tool_name == ASK_USER_QUESTION_TOOL {
+        return None;
+    }
+    // Fingerprint over the actual tool arguments, not just `command`, so that
+    // future tools with non-string args still fingerprint stably.
+    let args = serde_json::json!({ "command": proposal.command });
+    Some(loop_detector::record_proposal_global(
+        &proposal.tool_name,
+        &args,
+    ))
 }
 
 // --- Core logic: processes an LLM response into an AgentStepResult ---
 
-/// Given an LLM response message, check for tool calls / fallbacks / nudge needs.
-/// Returns `Some(result)` if we have a final answer, or `None` if we should nudge and retry.
+/// Given an LLM response message, dispatch to the right response shape.
+/// Always returns Some — the legacy nudge loop is gone (LoopDetector replaces
+/// the text-pattern heuristic that misfired on natural assistant prose).
 fn process_response(
     response_msg: &Message,
     registry: &ToolRegistry,
     history: &mut Vec<Message>,
-    current_context: &mut Vec<Message>,
-    attempts: &mut usize,
-) -> Option<AgentStepResult> {
-    // Check for proper tool calls (all of them)
+) -> AgentStepResult {
+    // 1) Native tool_calls path (Anthropic, OpenAI, Ollama).
     let proposals = extract_tool_proposals(response_msg, registry);
     if !proposals.is_empty() {
         history.push(response_msg.clone());
-        let response = if proposals.len() == 1 {
+        let verdict = select_proposal(&proposals).and_then(detect_loop);
+        // Collapse to the compact CommandProposal shape ONLY for a lone
+        // run_powershell. ask_user_question carries `question_data` that the
+        // CommandProposal variant can't hold — collapsing it would drop the
+        // multiple-choice payload and the frontend would render it as a
+        // PowerShell command. So any question (or multiple proposals) goes
+        // through ToolProposals which preserves question_data.
+        let is_lone_powershell =
+            proposals.len() == 1 && proposals[0].tool_name == TOOL_NAME;
+        let response = if is_lone_powershell {
             AgentResponse::CommandProposal(proposals[0].command.clone())
         } else {
             AgentResponse::ToolProposals(proposals)
         };
-        return Some(AgentStepResult {
+        return AgentStepResult {
             response,
             updated_history: history.clone(),
-        });
+            loop_verdict: verdict,
+        };
     }
 
-    // Fallback extraction from text
+    // 2) Fallback extraction from text (for models that don't reliably emit
+    //    native tool_calls — small Ollama models, mid-stream interruptions).
+    //    Skip if the message reads like a completion summary, to avoid false
+    //    extraction from prose like "I successfully ran echo X."
     let content_lower = response_msg.content.to_lowercase();
     if !is_success_summary(&content_lower) {
-        if let Some(cmd) = extract_code_block(&response_msg.content) {
+        if let Some(cmd) =
+            extract_code_block(&response_msg.content).or_else(|| extract_raw_tool_call(&response_msg.content))
+        {
             history.push(response_msg.clone());
-            return Some(AgentStepResult {
-                response: AgentResponse::CommandProposal(cmd),
-                updated_history: history.clone(),
-            });
-        }
-
-        if let Some(cmd) = extract_raw_tool_call(&response_msg.content) {
-            history.push(response_msg.clone());
-            return Some(AgentStepResult {
-                response: AgentResponse::CommandProposal(cmd),
-                updated_history: history.clone(),
-            });
-        }
-    }
-
-    // Auto-nudge
-    if should_nudge(&response_msg.content, &content_lower) {
-        let nudge_count = current_context
-            .iter()
-            .filter(|m| {
-                m.content.contains("EXECUTE NOW") || m.content.contains("WRITE THE CODE NOW")
-            })
-            .count();
-
-        if nudge_count < MAX_NUDGE_ATTEMPTS - 1 {
-            current_context.push(response_msg.clone());
-            let nudge_msg = if nudge_count == 0 {
-                "STOP. You MUST call the run_powershell tool NOW. Do not explain - EXECUTE NOW."
-            } else {
-                "You MUST output the actual command. If you cannot call the tool, write the command inside a ```powershell code block. Do NOT describe what you would do - WRITE THE CODE NOW."
+            let synthetic = ToolProposal {
+                tool_name: TOOL_NAME.to_string(),
+                command: cmd.clone(),
+                tool_call_id: None,
+                question_data: None,
             };
-            current_context.push(Message {
-                role: "system".to_string(),
-                content: nudge_msg.to_string(),
-                tool_calls: None,
-            });
-            *attempts += 1;
-            return None; // Signal: retry
+            let verdict = detect_loop(&synthetic);
+            return AgentStepResult {
+                response: AgentResponse::CommandProposal(cmd),
+                updated_history: history.clone(),
+                loop_verdict: verdict,
+            };
         }
     }
 
-    // Text response (success or final)
+    // 3) Plain text response (success summary, refusal, or clarification text).
     history.push(response_msg.clone());
-    Some(AgentStepResult {
+    AgentStepResult {
         response: AgentResponse::Text(response_msg.content.clone()),
         updated_history: history.clone(),
-    })
-}
-
-// --- Public API ---
-
-/// Non-streaming agent step.
-pub async fn run_agent_step(
-    model: String,
-    history: Vec<Message>,
-) -> Result<AgentStepResult, String> {
-    let registry = tools::build_default_registry();
-    let tool_defs = registry.definitions();
-
-    let mut attempts = 0;
-    let mut current_context = history.clone();
-    let mut hist = history;
-    let mut last_response: Option<Message> = None;
-
-    while attempts < MAX_NUDGE_ATTEMPTS {
-        let response_msg =
-            router::route_chat(&model, current_context.clone(), Some(tool_defs.clone())).await?;
-
-        last_response = Some(response_msg.clone());
-
-        if let Some(result) =
-            process_response(&response_msg, &registry, &mut hist, &mut current_context, &mut attempts)
-        {
-            return Ok(result);
-        }
-        // process_response returned None → nudge was applied, loop continues
-    }
-
-    // Exhausted retries
-    if let Some(msg) = last_response {
-        hist.push(msg.clone());
-        Ok(AgentStepResult {
-            response: AgentResponse::Text(msg.content),
-            updated_history: hist,
-        })
-    } else {
-        Ok(AgentStepResult {
-            response: AgentResponse::Text(
-                "Agent failed to respond correctly after retries.".to_string(),
-            ),
-            updated_history: hist,
-        })
+        loop_verdict: None,
     }
 }
 
-/// Streaming agent step — sends text deltas and Done event via Tauri channel.
-pub async fn run_agent_step_stream(
-    model: String,
-    history: Vec<Message>,
-    channel: tauri::ipc::Channel<StreamChunk>,
-) -> Result<AgentStepResult, String> {
-    let registry = tools::build_default_registry();
-    let tool_defs = registry.definitions();
+// --- Context-recovery wrapper ---
 
-    let mut attempts = 0;
-    let mut current_context = history.clone();
-    let mut hist = history;
-    let mut last_response: Option<Message> = None;
-
-    while attempts < MAX_NUDGE_ATTEMPTS {
+/// Wrap a streaming call with in-loop context-window recovery. On
+/// `ContextWindowExceeded`, runs the trim ladder and retries up to
+/// `MAX_CONTEXT_RECOVERY_ATTEMPTS` times. (Transient network errors are NOT
+/// retried for streaming — partial chunks may already have been emitted.)
+async fn call_stream_with_context_recovery(
+    model: &str,
+    current_context: &mut Vec<Message>,
+    tool_defs: &[crate::llm::ToolDefinition],
+    channel: &tauri::ipc::Channel<StreamChunk>,
+) -> Result<Message, String> {
+    let mut recovery_attempts = 0;
+    loop {
         let ch = channel.clone();
         let on_chunk = move |text: String| {
             let _ = ch.send(StreamChunk::TextDelta { text });
         };
-
-        let response_msg = match router::route_chat_stream(
-            &model,
+        match router::route_chat_stream(
+            model,
             current_context.clone(),
-            Some(tool_defs.clone()),
+            Some(tool_defs.to_vec()),
             on_chunk,
         )
         .await
         {
+            Ok(msg) => return Ok(msg),
+            Err(e) => {
+                if recovery_attempts < MAX_CONTEXT_RECOVERY_ATTEMPTS
+                    && classify(&e) == ErrorClass::ContextWindowExceeded
+                {
+                    let (trimmed, dropped, orphans) =
+                        history::recover_from_context_overflow(current_context);
+                    eprintln!(
+                        "[agent stream] Context overflow recovery: trimmed {} tool bodies, dropped {} messages, reconciled {} orphans (attempt {}/{})",
+                        trimmed,
+                        dropped,
+                        orphans,
+                        recovery_attempts + 1,
+                        MAX_CONTEXT_RECOVERY_ATTEMPTS
+                    );
+                    recovery_attempts += 1;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+// --- Public API ---
+
+/// Streaming agent step — sends text deltas and Done event via Tauri channel.
+///
+/// `drop_tools` is set by the frontend when the previous turn's loop_verdict
+/// was `Break`. We honour it by sending an empty tool-defs list, forcing the
+/// model into a text-only reassessment.
+pub async fn run_agent_step_stream(
+    model: String,
+    history: Vec<Message>,
+    drop_tools: bool,
+    channel: tauri::ipc::Channel<StreamChunk>,
+) -> Result<AgentStepResult, String> {
+    let registry = tools::build_default_registry();
+    let tool_defs = if drop_tools {
+        Vec::new()
+    } else {
+        registry.definitions()
+    };
+    let mut current_context = history;
+
+    let response_msg =
+        match call_stream_with_context_recovery(&model, &mut current_context, &tool_defs, &channel)
+            .await
+        {
             Ok(msg) => msg,
             Err(e) => {
-                let _ = channel.send(StreamChunk::Error {
-                    error: e.clone(),
-                });
+                let _ = channel.send(StreamChunk::Error { error: e.clone() });
                 return Err(e);
             }
         };
 
-        last_response = Some(response_msg.clone());
-
-        if let Some(result) =
-            process_response(&response_msg, &registry, &mut hist, &mut current_context, &mut attempts)
-        {
-            let _ = channel.send(StreamChunk::Done {
-                message: result.updated_history.last().unwrap().clone(),
-            });
-            return Ok(result);
-        }
-        // process_response returned None → nudge was applied, loop continues
-    }
-
-    // Exhausted retries
-    if let Some(msg) = last_response {
-        hist.push(msg.clone());
+    let result = process_response(&response_msg, &registry, &mut current_context);
+    if let Some(last) = result.updated_history.last() {
         let _ = channel.send(StreamChunk::Done {
-            message: msg.clone(),
+            message: last.clone(),
         });
-        Ok(AgentStepResult {
-            response: AgentResponse::Text(msg.content),
-            updated_history: hist,
-        })
-    } else {
-        let fallback_msg = Message {
-            role: "assistant".to_string(),
-            content: "Agent failed to respond correctly after retries.".to_string(),
-            tool_calls: None,
-        };
-        let _ = channel.send(StreamChunk::Done {
-            message: fallback_msg,
-        });
-        Ok(AgentStepResult {
-            response: AgentResponse::Text(
-                "Agent failed to respond correctly after retries.".to_string(),
-            ),
-            updated_history: hist,
-        })
     }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -366,6 +384,7 @@ mod tests {
             role: "assistant".to_string(),
             content: String::new(),
             tool_calls: Some(calls),
+            ..Default::default()
         }
     }
 
@@ -442,7 +461,7 @@ mod tests {
         let msg = Message {
             role: "assistant".to_string(),
             content: "Just a text response".to_string(),
-            tool_calls: None,
+            ..Default::default()
         };
         let proposals = extract_tool_proposals(&msg, &registry);
         assert!(proposals.is_empty());
@@ -502,11 +521,13 @@ mod tests {
                 tool_name: "run_powershell".to_string(),
                 command: "echo first".to_string(),
                 tool_call_id: Some("toolu_1".to_string()),
+                question_data: None,
             },
             ToolProposal {
                 tool_name: "run_powershell".to_string(),
                 command: "echo second".to_string(),
                 tool_call_id: None,
+                question_data: None,
             },
         ]);
         let json = serde_json::to_value(&response).unwrap();
@@ -520,6 +541,35 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_tool_proposals_ask_user_question() {
+        let registry = tools::build_default_registry();
+        let msg = make_msg_with_tool_calls(vec![ToolCall {
+            id: Some("toolu_q1".to_string()),
+            function: FunctionCall {
+                name: "ask_user_question".to_string(),
+                arguments: json!({
+                    "question": "Which format do you want?",
+                    "header": "Format",
+                    "options": [
+                        { "label": "mp4", "description": "H.264, broadly compatible" },
+                        { "label": "mov", "description": "ProRes-friendly" }
+                    ]
+                }),
+            },
+        }]);
+        let proposals = extract_tool_proposals(&msg, &registry);
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].tool_name, "ask_user_question");
+        assert_eq!(proposals[0].command, "Which format do you want?");
+        let qd = proposals[0].question_data.as_ref().unwrap();
+        assert_eq!(qd.question, "Which format do you want?");
+        assert_eq!(qd.header.as_deref(), Some("Format"));
+        assert_eq!(qd.options.len(), 2);
+        assert_eq!(qd.options[0].label, "mp4");
+        assert!(!qd.multi_select);
+    }
+
+    #[test]
     fn test_agent_step_result_serialization() {
         let result = AgentStepResult {
             response: AgentResponse::CommandProposal("dir".to_string()),
@@ -527,7 +577,7 @@ mod tests {
                 Message {
                     role: "user".to_string(),
                     content: "list files".to_string(),
-                    tool_calls: None,
+                    ..Default::default()
                 },
                 Message {
                     role: "assistant".to_string(),
@@ -539,8 +589,10 @@ mod tests {
                             arguments: json!({ "command": "dir" }),
                         },
                     }]),
+                    ..Default::default()
                 },
             ],
+            loop_verdict: None,
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["response"]["type"], "CommandProposal");
@@ -580,6 +632,8 @@ mod tests {
 
     #[test]
     fn test_process_response_with_tool_call() {
+        let _guard = loop_detector::test_lock();
+        loop_detector::reset_global();
         let registry = tools::build_default_registry();
         let msg = Message {
             role: "assistant".to_string(),
@@ -591,36 +645,74 @@ mod tests {
                     arguments: json!({ "command": "Get-ChildItem" }),
                 },
             }]),
+            ..Default::default()
         };
         let mut history = vec![];
-        let mut context = vec![];
-        let mut attempts = 0;
-
-        let result = process_response(&msg, &registry, &mut history, &mut context, &mut attempts);
-        assert!(result.is_some());
-        let r = result.unwrap();
+        let r = process_response(&msg, &registry, &mut history);
         match r.response {
             AgentResponse::CommandProposal(cmd) => assert_eq!(cmd, "Get-ChildItem"),
             _ => panic!("Expected CommandProposal"),
         }
-        assert_eq!(r.updated_history.len(), 1); // msg added to history
+        assert_eq!(r.updated_history.len(), 1);
+        // First proposal — should not trip loop detection.
+        assert!(r.loop_verdict.as_ref().map(|v| v.is_ok()).unwrap_or(true));
+    }
+
+    #[test]
+    fn test_process_response_lone_question_returns_tool_proposals() {
+        // Regression: a lone ask_user_question must NOT collapse to
+        // CommandProposal (which drops question_data and makes the frontend
+        // render it as PowerShell). It must return ToolProposals so the
+        // multiple-choice payload survives.
+        let _guard = loop_detector::test_lock();
+        loop_detector::reset_global();
+        let registry = tools::build_default_registry();
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: "Which format?".to_string(),
+            tool_calls: Some(vec![ToolCall {
+                id: Some("toolu_q".to_string()),
+                function: FunctionCall {
+                    name: "ask_user_question".to_string(),
+                    arguments: json!({
+                        "question": "Which format?",
+                        "options": [{ "label": "mp4" }, { "label": "mov" }]
+                    }),
+                },
+            }]),
+            ..Default::default()
+        };
+        let mut history = vec![];
+        let r = process_response(&msg, &registry, &mut history);
+        match r.response {
+            AgentResponse::ToolProposals(props) => {
+                assert_eq!(props.len(), 1);
+                assert_eq!(props[0].tool_name, "ask_user_question");
+                assert!(
+                    props[0].question_data.is_some(),
+                    "question_data must survive"
+                );
+            }
+            other => panic!(
+                "Expected ToolProposals for a lone question, got {:?}",
+                serde_json::to_value(&other).unwrap()
+            ),
+        }
     }
 
     #[test]
     fn test_process_response_with_code_block() {
+        let _guard = loop_detector::test_lock();
+        loop_detector::reset_global();
         let registry = tools::build_default_registry();
         let msg = Message {
             role: "assistant".to_string(),
             content: "Here's the command:\n```powershell\nGet-Process\n```".to_string(),
-            tool_calls: None,
+            ..Default::default()
         };
         let mut history = vec![];
-        let mut context = vec![];
-        let mut attempts = 0;
-
-        let result = process_response(&msg, &registry, &mut history, &mut context, &mut attempts);
-        assert!(result.is_some());
-        match result.unwrap().response {
+        let r = process_response(&msg, &registry, &mut history);
+        match r.response {
             AgentResponse::CommandProposal(cmd) => assert_eq!(cmd, "Get-Process"),
             _ => panic!("Expected CommandProposal from code block"),
         }
@@ -628,44 +720,70 @@ mod tests {
 
     #[test]
     fn test_process_response_success_text() {
+        let _guard = loop_detector::test_lock();
+        loop_detector::reset_global();
         let registry = tools::build_default_registry();
         let msg = Message {
             role: "assistant".to_string(),
             content: "Task complete! All files have been processed successfully.".to_string(),
-            tool_calls: None,
+            ..Default::default()
         };
         let mut history = vec![];
-        let mut context = vec![];
-        let mut attempts = 0;
-
-        let result = process_response(&msg, &registry, &mut history, &mut context, &mut attempts);
-        assert!(result.is_some());
-        match result.unwrap().response {
+        let r = process_response(&msg, &registry, &mut history);
+        match r.response {
             AgentResponse::Text(text) => assert!(text.contains("Task complete")),
             _ => panic!("Expected Text response for success summary"),
+        }
+        assert!(r.loop_verdict.is_none());
+    }
+
+    #[test]
+    fn test_process_response_text_no_extraction() {
+        // Natural assistant prose without a tool call should now just return
+        // Text instead of misfiring the old nudge heuristic. This is the
+        // behavior change driven by deleting INTENT_PHRASES / should_nudge.
+        let _guard = loop_detector::test_lock();
+        loop_detector::reset_global();
+        let registry = tools::build_default_registry();
+        let msg = Message {
+            role: "assistant".to_string(),
+            content: "I'll process the files now.".to_string(),
+            ..Default::default()
+        };
+        let mut history = vec![];
+        let r = process_response(&msg, &registry, &mut history);
+        match r.response {
+            AgentResponse::Text(_) => {}
+            other => panic!("Expected Text, got {:?}", serde_json::to_value(&other).unwrap()),
         }
     }
 
     #[test]
-    fn test_process_response_nudge() {
+    fn test_process_response_loop_verdict_escalates_on_repeat() {
+        let _guard = loop_detector::test_lock();
+        loop_detector::reset_global();
         let registry = tools::build_default_registry();
-        // Short explanation with intent phrase → should trigger nudge
-        let msg = Message {
+        let make_msg = |cmd: &str| Message {
             role: "assistant".to_string(),
-            content: "I'll process the files now.".to_string(),
-            tool_calls: None,
+            content: String::new(),
+            synthetic: false,
+            tool_calls: Some(vec![ToolCall {
+                id: Some("toolu_1".to_string()),
+                function: FunctionCall {
+                    name: "run_powershell".to_string(),
+                    arguments: json!({ "command": cmd }),
+                },
+            }]),
         };
         let mut history = vec![];
-        let mut context = vec![];
-        let mut attempts = 0;
-
-        let result = process_response(&msg, &registry, &mut history, &mut context, &mut attempts);
-        // Should return None (nudge applied, retry needed)
-        assert!(result.is_none());
-        assert_eq!(attempts, 1);
-        // Context should have the response + nudge message
-        assert_eq!(context.len(), 2);
-        assert!(context[1].content.contains("EXECUTE NOW"));
+        let _ = process_response(&make_msg("echo same"), &registry, &mut history);
+        let _ = process_response(&make_msg("echo same"), &registry, &mut history);
+        let r3 = process_response(&make_msg("echo same"), &registry, &mut history);
+        assert!(
+            r3.loop_verdict.is_some(),
+            "expected verdict on 3rd identical call"
+        );
+        assert!(!r3.loop_verdict.unwrap().is_ok());
     }
 
     // --- Existing extraction tests ---

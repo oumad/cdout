@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   Terminal,
@@ -6,6 +7,7 @@ import {
   User,
   ChevronDown,
   ChevronUp,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import type { Message } from "../types";
 import {
@@ -20,12 +22,50 @@ interface ChatMessageProps {
   onToggle: (index: number) => void;
 }
 
-export function ChatMessage({
+/**
+ * Internal nudge messages (auto-step continuations, loop-detected notices,
+ * interrupt confirmations) are stored with role="user" so the LLM API accepts
+ * them, but should render distinctly so the user never confuses them with
+ * their own input. Compact, gray, with a "shuttle internal" badge.
+ */
+function SyntheticNote({ content }: { content: string }) {
+  return (
+    <div className="flex justify-center my-2 group">
+      <div className="bg-gray-900/50 border border-gray-800/60 rounded-md text-[10px] max-w-2xl w-full px-3 py-2 flex items-start gap-2">
+        <SettingsIcon
+          size={11}
+          className="text-gray-600 mt-0.5 shrink-0"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="text-[9px] uppercase tracking-wider text-gray-600 font-semibold mb-0.5">
+            shuttle internal
+          </div>
+          <div className="text-gray-500 italic leading-snug whitespace-pre-wrap break-words">
+            {content}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChatMessageImpl({
   message: msg,
   index: idx,
   isExpanded,
   onToggle,
 }: ChatMessageProps) {
+  // Normalize once so a null/undefined content (which TS types as string but a
+  // malformed backend payload could still deliver) never throws in
+  // ReactMarkdown or a `.length` check downstream.
+  const content = msg.content ?? "";
+
+  // Synthetic messages: shuttle-injected nudges that travel as role="user" but
+  // are NOT user input. Render with the dedicated SyntheticNote shape.
+  if (msg.synthetic) {
+    return <SyntheticNote content={content} />;
+  }
+
   if (msg.role === "system") {
     return (
       <div className="flex justify-center my-4 group">
@@ -38,7 +78,7 @@ export function ChatMessage({
             </span>
           </summary>
           <div className="p-4 pt-0 text-gray-400 font-mono whitespace-pre-wrap border-t border-gray-800/50 mt-2">
-            {msg.content}
+            {content}
           </div>
         </details>
       </div>
@@ -81,13 +121,13 @@ export function ChatMessage({
             <div
               className={`whitespace-pre-wrap ${!isExpanded ? "max-h-32 overflow-hidden relative" : ""}`}
             >
-              {msg.content}
+              {content}
               {!isExpanded &&
-                msg.content.length > TOOL_OUTPUT_COLLAPSE_CHARS && (
+                content.length > TOOL_OUTPUT_COLLAPSE_CHARS && (
                   <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-gray-950/80 to-transparent pointer-events-none" />
                 )}
             </div>
-            {msg.content.length > TOOL_OUTPUT_COLLAPSE_CHARS && (
+            {content.length > TOOL_OUTPUT_COLLAPSE_CHARS && (
               <button
                 onClick={() => onToggle(idx)}
                 className="mt-2 flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-300 uppercase font-bold tracking-wider"
@@ -111,14 +151,14 @@ export function ChatMessage({
                 prose-p:leading-snug prose-p:my-1 prose-headings:my-2 prose-li:my-0.5
                 prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10 prose-pre:text-[11px] prose-pre:p-2
                 prose-code:text-indigo-300 prose-code:bg-white/5 prose-code:px-1 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
-                ${!isExpanded && msg.content.length > MESSAGE_COLLAPSE_CHARS ? "max-h-48 overflow-hidden relative" : ""}`}
+                ${!isExpanded && content.length > MESSAGE_COLLAPSE_CHARS ? "max-h-48 overflow-hidden relative" : ""}`}
             >
-              <ReactMarkdown>{msg.content}</ReactMarkdown>
-              {!isExpanded && msg.content.length > MESSAGE_COLLAPSE_CHARS && (
+              <ReactMarkdown>{content}</ReactMarkdown>
+              {!isExpanded && content.length > MESSAGE_COLLAPSE_CHARS && (
                 <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-gray-950 to-transparent pointer-events-none" />
               )}
             </div>
-            {msg.content.length > MESSAGE_COLLAPSE_CHARS && (
+            {content.length > MESSAGE_COLLAPSE_CHARS && (
               <button
                 onClick={() => onToggle(idx)}
                 className="mt-2 flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-300 uppercase font-bold tracking-wider self-start"
@@ -140,3 +180,11 @@ export function ChatMessage({
     </div>
   );
 }
+
+/**
+ * Memoized so a streaming token (which re-renders the parent ~80x/sec) does
+ * NOT re-run ReactMarkdown for every historical message — only the streaming
+ * bubble updates. `onToggle` must be a stable reference (useCallback in the
+ * parent) for this memo to be effective.
+ */
+export const ChatMessage = memo(ChatMessageImpl);

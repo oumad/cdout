@@ -10,10 +10,19 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dist-portable
 *.local
+
+# Rust / Tauri build output
+src-tauri/target
+
+# Local session tmp files (atomic-write scratch)
+*.json.tmp
 
 # Claude Code
 .claude/
+.research/
+.research_tmp/
 
 # Editor directories and files
 .vscode/*
