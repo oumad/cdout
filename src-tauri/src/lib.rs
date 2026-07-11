@@ -1,15 +1,14 @@
-mod auth;
 mod constants;
 mod features;
 mod llm;
 mod tools;
 mod utils;
 
-use auth::antigravity;
-use auth::cli_credentials;
 use features::agent;
 use features::explorer;
+use features::loop_detector;
 use features::prompts;
+use features::sessions;
 use features::skills;
 use llm::clients::ollama;
 use llm::{Message, StreamChunk};
@@ -34,32 +33,71 @@ fn get_explorer_debug() -> Result<explorer::ExplorerDebugInfo, String> {
     explorer::get_explorer_debug_info().map_err(|e| e.to_string())
 }
 
+/// Verified OpenRouter model slugs (mid-2026). Pinned list — `useModels`
+/// surfaces these whenever the user has an OpenRouter key configured.
+/// Refresh once a quarter or after OR announces deprecations.
+const OPENROUTER_PAID_MODELS: &[&str] = &[
+    "anthropic/claude-opus-4.7",
+    "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-haiku-4.5",
+    "openai/gpt-5",
+    "openai/gpt-4.1",
+    "google/gemini-3-pro-preview",
+    "google/gemini-3-flash-preview",
+    "google/gemini-2.5-flash",
+];
+
+/// Optional free-tier slugs (FP4 quantization risk + 20 req/min cap).
+const OPENROUTER_FREE_MODELS: &[&str] = &[
+    "qwen/qwen3-coder-1m:free",
+    "google/gemini-2.5-flash-lite",
+];
+
+/// Direct Anthropic models — only surfaced when the user has an Anthropic
+/// API key configured. They keep the prompt-caching path that OpenRouter's
+/// OpenAI-compat wire drops.
+const ANTHROPIC_DIRECT_MODELS: &[&str] = &[
+    "anthropic:claude-opus-4-7",
+    "anthropic:claude-sonnet-4-6",
+    "anthropic:claude-haiku-4-5",
+];
+
 #[tauri::command]
 async fn get_ollama_models() -> Result<Vec<String>, String> {
     let url = config::get_ollama_url();
-    let mut models = ollama::list_models(&url)
+    let mut models: Vec<String> = ollama::list_models(&url)
         .await
         .map_err(|e| format!("Ollama connection failed: {}", e))
-        .unwrap_or_default();
-
-    if antigravity::load_credentials().is_some() {
-        models.push("antigravity (gemini-3-flash)".to_string());
-    }
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| format!("ollama:{}", m))
+        .collect();
 
     let api_keys = config::load_api_keys();
-    if api_keys.openai.as_ref().is_some_and(|k| !k.is_empty()) {
-        models.push("openai:gpt-4o".to_string());
-    }
-    if api_keys.gemini.as_ref().is_some_and(|k| !k.is_empty()) {
-        models.push("gemini:gemini-1.5-pro".to_string());
+
+    if api_keys
+        .openrouter
+        .as_ref()
+        .is_some_and(|k| !k.trim().is_empty())
+    {
+        for m in OPENROUTER_PAID_MODELS {
+            models.push((*m).to_string());
+        }
+        if config::get_show_free_openrouter_models() {
+            for m in OPENROUTER_FREE_MODELS {
+                models.push((*m).to_string());
+            }
+        }
     }
 
-    // CLI credential-based models
-    if cli_credentials::is_claude_code_available() {
-        models.push("claude:claude-sonnet-4-20250514".to_string());
-    }
-    if cli_credentials::is_codex_available() {
-        models.push("codex:gpt-4o".to_string());
+    if api_keys
+        .anthropic
+        .as_ref()
+        .is_some_and(|k| !k.trim().is_empty())
+    {
+        for m in ANTHROPIC_DIRECT_MODELS {
+            models.push((*m).to_string());
+        }
     }
 
     Ok(models)
@@ -90,43 +128,167 @@ fn set_selected_model(model: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn login_antigravity() -> Result<String, String> {
-    antigravity::perform_login()
-        .await
-        .map(|c| c.email.unwrap_or_else(|| "Logged in".to_string()))
-}
-
-#[tauri::command]
-async fn get_antigravity_status() -> Result<Option<String>, String> {
-    Ok(antigravity::load_credentials().and_then(|c| c.email))
-}
-
-#[tauri::command]
-async fn set_openai_key(key: String) -> Result<(), String> {
+async fn set_openrouter_key(key: String) -> Result<(), String> {
     let trimmed = key.trim().to_string();
     if trimmed.is_empty() {
         return Err("API key cannot be empty".to_string());
     }
-    config::set_openai_key(trimmed)
+    config::set_openrouter_key(trimmed)
 }
 
 #[tauri::command]
-async fn set_gemini_key(key: String) -> Result<(), String> {
+async fn set_anthropic_key(key: String) -> Result<(), String> {
     let trimmed = key.trim().to_string();
     if trimmed.is_empty() {
         return Err("API key cannot be empty".to_string());
     }
-    config::set_gemini_key(trimmed)
+    config::set_anthropic_key(trimmed)
+}
+
+/// Masked view of stored API keys. Never returns the full plaintext key to
+/// the renderer — that would land in React state and be DOM-recoverable via
+/// devtools. The preview is the last 4 characters (e.g. "...3fa1") which is
+/// enough for the user to recognize which key is set without re-exposing it.
+#[derive(serde::Serialize)]
+struct MaskedApiKeys {
+    openrouter_set: bool,
+    openrouter_preview: Option<String>,
+    anthropic_set: bool,
+    anthropic_preview: Option<String>,
+}
+
+fn mask_key(key: &str) -> Option<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    if key.len() <= 4 {
+        return Some("****".to_string());
+    }
+    let tail: String = key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    Some(format!("…{}", tail))
 }
 
 #[tauri::command]
-async fn get_api_keys() -> Result<config::ApiKeys, String> {
-    Ok(config::load_api_keys())
+async fn get_api_keys() -> Result<MaskedApiKeys, String> {
+    let keys = config::load_api_keys();
+    let openrouter = keys.openrouter.as_deref().unwrap_or("");
+    let anthropic = keys.anthropic.as_deref().unwrap_or("");
+    Ok(MaskedApiKeys {
+        openrouter_set: !openrouter.trim().is_empty(),
+        openrouter_preview: mask_key(openrouter),
+        anthropic_set: !anthropic.trim().is_empty(),
+        anthropic_preview: mask_key(anthropic),
+    })
 }
 
 #[tauri::command]
-fn get_cli_credentials_status() -> Result<cli_credentials::CliCredentialsStatus, String> {
-    Ok(cli_credentials::get_status())
+fn get_show_free_openrouter_models() -> Result<bool, String> {
+    Ok(config::get_show_free_openrouter_models())
+}
+
+#[tauri::command]
+fn set_show_free_openrouter_models(enabled: bool) -> Result<(), String> {
+    config::set_show_free_openrouter_models(enabled)
+}
+
+#[tauri::command]
+fn get_openrouter_disclosure_ack() -> Result<bool, String> {
+    Ok(config::get_openrouter_disclosure_ack())
+}
+
+#[tauri::command]
+fn set_openrouter_disclosure_ack(ack: bool) -> Result<(), String> {
+    config::set_openrouter_disclosure_ack(ack)
+}
+
+/// Migration-banner trigger: did the user have any of the now-removed CLI
+/// credentials/Antigravity OAuth/openai/gemini keys present on disk before
+/// upgrading? Frontend shows the OpenRouter onboarding banner one time.
+///
+/// Side effect: if the legacy `api_keys.json` still mentions `openai` /
+/// `gemini` fields, REWRITE it in the new shape so those plaintext keys
+/// don't sit on disk indefinitely. The serde deserializer already drops the
+/// unknown fields; we just persist the cleaned struct back.
+#[tauri::command]
+fn has_legacy_credentials() -> Result<bool, String> {
+    let home = dirs::home_dir();
+    let cfg = dirs::config_dir();
+    let mut found = false;
+
+    if let Some(h) = home.as_ref() {
+        if h.join(".claude").join(".credentials.json").exists() {
+            found = true;
+        }
+        if h.join(".codex").join("auth.json").exists() {
+            found = true;
+        }
+    }
+    if let Some(c) = cfg.as_ref() {
+        if c.join("shuttle-io")
+            .join("antigravity_credentials.json")
+            .exists()
+        {
+            found = true;
+        }
+
+        // Legacy api_keys.json that still mentions openai/gemini → rewrite.
+        let path = c.join("shuttle-io").join("api_keys.json");
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            if raw.contains("\"openai\"") || raw.contains("\"gemini\"") {
+                found = true;
+                // Load through the new struct (drops unknown fields), save.
+                let cleaned = config::load_api_keys();
+                if let Err(e) = config::save_api_keys(&cleaned) {
+                    eprintln!("[migration] Failed to purge legacy api_keys.json fields: {}", e);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Clean up the legacy on-disk artefacts a user may still have around after
+/// the OpenRouter migration. Always removes shuttle-io's own
+/// `antigravity_credentials.json`. Removes the third-party CLI creds
+/// (~/.claude, ~/.codex) ONLY when `remove_third_party` is true — those
+/// belong to other tools, so we ask the user first.
+#[tauri::command]
+fn cleanup_legacy_credentials(remove_third_party: bool) -> Result<(), String> {
+    let mut errors: Vec<String> = Vec::new();
+
+    if let Some(c) = dirs::config_dir() {
+        let path = c.join("shuttle-io").join("antigravity_credentials.json");
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(&path) {
+                errors.push(format!("antigravity_credentials.json: {}", e));
+            }
+        }
+    }
+
+    if remove_third_party {
+        if let Some(h) = dirs::home_dir() {
+            for p in [
+                h.join(".claude").join(".credentials.json"),
+                h.join(".codex").join("auth.json"),
+            ] {
+                if p.exists() {
+                    if let Err(e) = std::fs::remove_file(&p) {
+                        errors.push(format!("{}: {}", p.display(), e));
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Some files could not be removed: {}",
+            errors.join("; ")
+        ))
+    }
 }
 
 // --- Agent Commands ---
@@ -136,45 +298,146 @@ fn init_agent_conversation(
     context_path: String,
     selected_files: Vec<String>,
     user_prompt: String,
+    model: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<Vec<Message>, String> {
     let resource_dir = app_handle.path().resource_dir().ok();
-    let all_skills = skills::load_all_skills(resource_dir);
-    let skills_section = skills::get_skills_prompt_section(&all_skills);
-    let system_prompt =
-        prompts::get_initial_system_prompt(&context_path, &selected_files, &skills_section)?;
+    let loaded = skills::load_all_skills(resource_dir);
+    let skills_section = skills::get_skills_prompt_section(&loaded.skills);
+    // Small local models (Ollama) often don't emit native tool_calls reliably
+    // and benefit from the longer prose tool catalog + WRONG/CORRECT example.
+    // Cloud providers (Anthropic, OpenAI, OpenRouter) ship native tool schemas
+    // alongside the prompt so we can stay terse.
+    let sends_native_tool_specs = !model
+        .as_deref()
+        .map(|m| m.starts_with("ollama:"))
+        .unwrap_or(false);
+    let system_prompt = prompts::build_system_prompt(
+        &context_path,
+        &selected_files,
+        &skills_section,
+        sends_native_tool_specs,
+    )?;
     Ok(vec![
         Message {
             role: "system".to_string(),
             content: system_prompt,
             tool_calls: None,
+            synthetic: false,
         },
         Message {
             role: "user".to_string(),
             content: user_prompt,
             tool_calls: None,
+            synthetic: false,
         },
     ])
 }
 
+// --- Session commands ---
+
 #[tauri::command]
-fn list_skills(app_handle: tauri::AppHandle) -> Result<Vec<skills::Skill>, String> {
-    let resource_dir = app_handle.path().resource_dir().ok();
-    Ok(skills::load_all_skills(resource_dir))
+fn list_sessions() -> Result<Vec<sessions::SessionMeta>, String> {
+    sessions::list_sessions()
 }
 
 #[tauri::command]
-async fn run_agent_step(model: String, history: Vec<Message>) -> Result<AgentStepResult, String> {
-    agent::run_agent_step(model, history).await
+fn load_session(id: String) -> Result<sessions::Session, String> {
+    sessions::load_session(&id)
+}
+
+#[tauri::command]
+fn create_session(
+    user_prompt: String,
+    context_path: String,
+    selected_files: Vec<String>,
+    model: String,
+    app_handle: tauri::AppHandle,
+) -> Result<sessions::Session, String> {
+    let initial = init_agent_conversation(
+        context_path.clone(),
+        selected_files.clone(),
+        user_prompt.clone(),
+        Some(model.clone()),
+        app_handle,
+    )?;
+    sessions::create_session(
+        &user_prompt,
+        &context_path,
+        selected_files.len(),
+        &model,
+        initial,
+    )
+}
+
+#[tauri::command]
+fn save_session_messages(
+    id: String,
+    messages: Vec<Message>,
+) -> Result<sessions::SessionMeta, String> {
+    sessions::save_messages(&id, messages, chrono::Utc::now().timestamp_millis())
+}
+
+#[tauri::command]
+fn delete_session(id: String) -> Result<(), String> {
+    sessions::delete_session(&id)
+}
+
+#[tauri::command]
+fn rename_session(id: String, title: String) -> Result<sessions::SessionMeta, String> {
+    sessions::rename_session(&id, &title)
+}
+
+#[derive(serde::Serialize)]
+struct ListSkillsResult {
+    skills: Vec<skills::Skill>,
+    quarantined: Vec<skills::QuarantinedSkill>,
+}
+
+#[tauri::command]
+fn list_skills(app_handle: tauri::AppHandle) -> Result<ListSkillsResult, String> {
+    let resource_dir = app_handle.path().resource_dir().ok();
+    let loaded = skills::load_all_skills(resource_dir);
+    Ok(ListSkillsResult {
+        skills: loaded.skills,
+        quarantined: loaded.quarantined,
+    })
 }
 
 #[tauri::command]
 async fn run_agent_step_stream(
     model: String,
     history: Vec<Message>,
+    drop_tools: Option<bool>,
     on_chunk: tauri::ipc::Channel<StreamChunk>,
 ) -> Result<AgentStepResult, String> {
-    agent::run_agent_step_stream(model, history, on_chunk).await
+    utils::cancel::reset();
+    // Reset the loop detector when starting a fresh conversation (history is
+    // just the system prompt + initial user prompt — no assistant turns yet).
+    let assistant_turns = history.iter().filter(|m| m.role == "assistant").count();
+    if assistant_turns == 0 {
+        loop_detector::reset_global();
+    }
+    // When the previous turn's loop_verdict was Break, the frontend passes
+    // `drop_tools: true`. We force a text-only reassessment by withholding
+    // tool definitions — the model can't propose another action, only
+    // explain or stop. This is the documented Break contract.
+    agent::run_agent_step_stream(model, history, drop_tools.unwrap_or(false), on_chunk).await
+}
+
+#[tauri::command]
+fn cancel_stream() {
+    utils::cancel::request();
+}
+
+#[tauri::command]
+fn get_running_command() -> Option<tools::powershell::RunningCommand> {
+    tools::powershell::get_running()
+}
+
+#[tauri::command]
+fn kill_running_command() -> Result<(), String> {
+    tools::powershell::kill_running()
 }
 
 #[tauri::command]
@@ -182,12 +445,14 @@ async fn execute_powershell(command: String, cwd: Option<String>) -> Result<Stri
     let registry = tools::build_default_registry();
     let args = serde_json::json!({ "command": command });
     let result = registry.validate_and_execute("run_powershell", &args, cwd.as_deref())?;
-    if result.is_error {
-        // Still return the output (contains stderr/exit code), but prefix so the LLM sees the failure
-        Ok(result.output)
-    } else {
-        Ok(result.output)
-    }
+    // Feed the outcome back to the loop detector so its no-progress signal works.
+    loop_detector::record_outcome_global(!result.is_error);
+    Ok(result.output)
+}
+
+#[tauri::command]
+fn reset_loop_detector() {
+    loop_detector::reset_global();
 }
 
 #[tauri::command]
@@ -197,6 +462,13 @@ fn get_hotkey() -> Result<String, String> {
 
 #[tauri::command]
 fn set_hotkey(hotkey: String) -> Result<(), String> {
+    // Reject an unparseable hotkey at the write boundary so a bad value never
+    // reaches disk (the startup path also falls back gracefully, but this
+    // gives the user immediate feedback instead of a silent default swap on
+    // next launch).
+    hotkey
+        .parse::<Shortcut>()
+        .map_err(|e| format!("Invalid hotkey '{hotkey}': {e}"))?;
     config::set_hotkey(hotkey)
 }
 
@@ -292,19 +564,31 @@ pub fn run() {
             set_ollama_url,
             get_selected_model,
             set_selected_model,
-            login_antigravity,
-            get_antigravity_status,
-            set_openai_key,
-            set_gemini_key,
+            set_openrouter_key,
+            set_anthropic_key,
             get_api_keys,
-            get_cli_credentials_status,
+            get_show_free_openrouter_models,
+            set_show_free_openrouter_models,
+            get_openrouter_disclosure_ack,
+            set_openrouter_disclosure_ack,
+            has_legacy_credentials,
+            cleanup_legacy_credentials,
             get_hotkey,
             set_hotkey,
             init_agent_conversation,
+            list_sessions,
+            load_session,
+            create_session,
+            save_session_messages,
+            delete_session,
+            rename_session,
             list_skills,
-            run_agent_step,
             run_agent_step_stream,
             execute_powershell,
+            reset_loop_detector,
+            cancel_stream,
+            get_running_command,
+            kill_running_command,
             write_file_list,
             spotlight_submit,
         ])
@@ -356,11 +640,24 @@ pub fn run() {
                 .build(app)?;
 
             // --- Global Hotkey ---
+            // A corrupt/unsupported hotkey string in config must NOT brick
+            // startup. Fall back to the built-in default; the default is a
+            // compile-time-known-good literal so its parse cannot fail.
             let hotkey_str = config::get_hotkey();
             let hotkey_spotlight = spotlight_window.clone();
-            let shortcut = hotkey_str
-                .parse::<Shortcut>()
-                .expect("Invalid hotkey in config");
+            let shortcut = match hotkey_str.parse::<Shortcut>() {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!(
+                        "[hotkey] Invalid hotkey '{hotkey_str}' in config ({e}); \
+                         falling back to default '{}'",
+                        config::DEFAULT_HOTKEY
+                    );
+                    config::DEFAULT_HOTKEY
+                        .parse::<Shortcut>()
+                        .expect("built-in default hotkey must parse")
+                }
+            };
 
             // Unregister first in case a previous instance left it registered
             let _ = app.global_shortcut().unregister(shortcut);

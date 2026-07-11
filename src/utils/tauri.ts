@@ -6,8 +6,9 @@ import type {
   AgentStepResult,
   ApiKeysResponse,
   StreamChunk,
-  Skill,
-  CliCredentialsStatus,
+  ListSkillsResult,
+  Session,
+  SessionMeta,
 } from "../types";
 
 // Explorer
@@ -40,26 +41,45 @@ export function setSelectedModel(model: string): Promise<void> {
   return invoke(CMD.SET_SELECTED_MODEL, { model });
 }
 
-// Auth
-export function loginAntigravity(): Promise<string> {
-  return invoke<string>(CMD.LOGIN_ANTIGRAVITY);
-}
-
-export function getAntigravityStatus(): Promise<string | null> {
-  return invoke<string | null>(CMD.GET_ANTIGRAVITY_STATUS);
-}
-
 // API Keys
 export function getApiKeys(): Promise<ApiKeysResponse> {
   return invoke<ApiKeysResponse>(CMD.GET_API_KEYS);
 }
 
-export function setOpenaiKey(key: string): Promise<void> {
-  return invoke(CMD.SET_OPENAI_KEY, { key });
+export function setOpenrouterKey(key: string): Promise<void> {
+  return invoke(CMD.SET_OPENROUTER_KEY, { key });
 }
 
-export function setGeminiKey(key: string): Promise<void> {
-  return invoke(CMD.SET_GEMINI_KEY, { key });
+export function setAnthropicKey(key: string): Promise<void> {
+  return invoke(CMD.SET_ANTHROPIC_KEY, { key });
+}
+
+// Free-tier OpenRouter models toggle
+export function getShowFreeOpenrouterModels(): Promise<boolean> {
+  return invoke<boolean>(CMD.GET_SHOW_FREE_OPENROUTER_MODELS);
+}
+
+export function setShowFreeOpenrouterModels(enabled: boolean): Promise<void> {
+  return invoke(CMD.SET_SHOW_FREE_OPENROUTER_MODELS, { enabled });
+}
+
+// OpenRouter disclosure (one-time migration banner)
+export function getOpenrouterDisclosureAck(): Promise<boolean> {
+  return invoke<boolean>(CMD.GET_OPENROUTER_DISCLOSURE_ACK);
+}
+
+export function setOpenrouterDisclosureAck(ack: boolean): Promise<void> {
+  return invoke(CMD.SET_OPENROUTER_DISCLOSURE_ACK, { ack });
+}
+
+export function hasLegacyCredentials(): Promise<boolean> {
+  return invoke<boolean>(CMD.HAS_LEGACY_CREDENTIALS);
+}
+
+export function cleanupLegacyCredentials(
+  removeThirdParty: boolean
+): Promise<void> {
+  return invoke(CMD.CLEANUP_LEGACY_CREDENTIALS, { removeThirdParty });
 }
 
 // Agent
@@ -75,23 +95,18 @@ export function initAgentConversation(
   });
 }
 
-export function runAgentStep(
-  model: string,
-  history: Message[]
-): Promise<AgentStepResult> {
-  return invoke<AgentStepResult>(CMD.RUN_AGENT_STEP, { model, history });
-}
-
 export function runAgentStepStream(
   model: string,
   history: Message[],
-  onChunk: (chunk: StreamChunk) => void
+  onChunk: (chunk: StreamChunk) => void,
+  dropTools = false
 ): Promise<AgentStepResult> {
   const channel = new Channel<StreamChunk>();
   channel.onmessage = onChunk;
   return invoke<AgentStepResult>(CMD.RUN_AGENT_STEP_STREAM, {
     model,
     history,
+    dropTools,
     onChunk: channel,
   });
 }
@@ -101,6 +116,27 @@ export function executePowershell(
   cwd: string | null
 ): Promise<string> {
   return invoke<string>(CMD.EXECUTE_POWERSHELL, { command, cwd });
+}
+
+export interface RunningCommand {
+  pid: number;
+  command_preview: string;
+}
+
+export function cancelStream(): Promise<void> {
+  return invoke(CMD.CANCEL_STREAM);
+}
+
+export function getRunningCommand(): Promise<RunningCommand | null> {
+  return invoke<RunningCommand | null>(CMD.GET_RUNNING_COMMAND);
+}
+
+export function killRunningCommand(): Promise<void> {
+  return invoke(CMD.KILL_RUNNING_COMMAND);
+}
+
+export function resetLoopDetector(): Promise<void> {
+  return invoke(CMD.RESET_LOOP_DETECTOR);
 }
 
 // Utility
@@ -116,14 +152,47 @@ export function setHotkey(hotkey: string): Promise<void> {
   return invoke(CMD.SET_HOTKEY, { hotkey });
 }
 
-// CLI Credentials
-export function getCliCredentialsStatus(): Promise<CliCredentialsStatus> {
-  return invoke<CliCredentialsStatus>(CMD.GET_CLI_CREDENTIALS_STATUS);
+// Sessions
+export function listSessions(): Promise<SessionMeta[]> {
+  return invoke<SessionMeta[]>(CMD.LIST_SESSIONS);
+}
+
+export function loadSession(id: string): Promise<Session> {
+  return invoke<Session>(CMD.LOAD_SESSION, { id });
+}
+
+export function createSession(
+  userPrompt: string,
+  contextPath: string,
+  selectedFiles: string[],
+  model: string
+): Promise<Session> {
+  return invoke<Session>(CMD.CREATE_SESSION, {
+    userPrompt,
+    contextPath,
+    selectedFiles,
+    model,
+  });
+}
+
+export function saveSessionMessages(
+  id: string,
+  messages: Message[]
+): Promise<SessionMeta> {
+  return invoke<SessionMeta>(CMD.SAVE_SESSION_MESSAGES, { id, messages });
+}
+
+export function deleteSession(id: string): Promise<void> {
+  return invoke(CMD.DELETE_SESSION, { id });
+}
+
+export function renameSession(id: string, title: string): Promise<SessionMeta> {
+  return invoke<SessionMeta>(CMD.RENAME_SESSION, { id, title });
 }
 
 // Skills
-export function listSkills(): Promise<Skill[]> {
-  return invoke<Skill[]>(CMD.LIST_SKILLS);
+export function listSkills(): Promise<ListSkillsResult> {
+  return invoke<ListSkillsResult>(CMD.LIST_SKILLS);
 }
 
 export function spotlightSubmit(
