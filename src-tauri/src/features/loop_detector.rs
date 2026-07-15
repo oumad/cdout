@@ -297,7 +297,7 @@ pub fn canonical_fingerprint(tool_name: &str, args: &Value) -> String {
 }
 
 // --- Process-wide singleton ---
-// shuttle-io has one concurrent agent loop by design (spotlight kicks off the
+// cdout has one concurrent agent loop by design (spotlight kicks off the
 // main window). A single global detector is the right shape; we'd swap to
 // per-session tokens if/when multi-window agent loops land.
 

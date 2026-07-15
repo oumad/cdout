@@ -23,7 +23,7 @@ pub struct Message {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// Marks shuttle-io-injected continuation/loop/interrupt nudges that need
+    /// Marks cdout-injected continuation/loop/interrupt nudges that need
     /// to look like role:user to the LLM API but should render as system
     /// notes in the UI. Defaults to false and is dropped from JSON when false
     /// so it doesn't leak to provider APIs that reject unknown fields.

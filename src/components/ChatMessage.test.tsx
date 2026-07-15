@@ -18,11 +18,11 @@ describe("ChatMessage — synthetic vs real user messages", () => {
       />
     );
     expect(screen.getByText("rename my photos")).toBeInTheDocument();
-    // Real user messages do NOT carry the "shuttle internal" badge.
-    expect(screen.queryByText(/shuttle internal/i)).not.toBeInTheDocument();
+    // Real user messages do NOT carry the "cdout internal" badge.
+    expect(screen.queryByText(/cdout internal/i)).not.toBeInTheDocument();
   });
 
-  it("renders a synthetic continuation nudge with the shuttle-internal badge", () => {
+  it("renders a synthetic continuation nudge with the cdout-internal badge", () => {
     render(
       <ChatMessage
         message={userMsg(
@@ -34,7 +34,7 @@ describe("ChatMessage — synthetic vs real user messages", () => {
         onToggle={vi.fn()}
       />
     );
-    expect(screen.getByText(/shuttle internal/i)).toBeInTheDocument();
+    expect(screen.getByText(/cdout internal/i)).toBeInTheDocument();
     // The continuation text itself is still visible to the user.
     expect(
       screen.getByText(/If the task is complete/)
@@ -53,7 +53,7 @@ describe("ChatMessage — synthetic vs real user messages", () => {
         onToggle={vi.fn()}
       />
     );
-    expect(screen.getByText(/shuttle internal/i)).toBeInTheDocument();
+    expect(screen.getByText(/cdout internal/i)).toBeInTheDocument();
     expect(screen.getByText(/\[Loop detected\]/)).toBeInTheDocument();
   });
 
@@ -69,6 +69,6 @@ describe("ChatMessage — synthetic vs real user messages", () => {
         onToggle={vi.fn()}
       />
     );
-    expect(screen.getByText(/shuttle internal/i)).toBeInTheDocument();
+    expect(screen.getByText(/cdout internal/i)).toBeInTheDocument();
   });
 });

@@ -167,7 +167,7 @@ fn build_files_block(
         ));
     }
     if file_count > MAX_FILES_TO_LIST {
-        let temp_path = env::temp_dir().join("shuttle_agent_context_files.txt");
+        let temp_path = env::temp_dir().join("cdout_agent_context_files.txt");
         let mut file =
             File::create(&temp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
         for f in selected_files {
