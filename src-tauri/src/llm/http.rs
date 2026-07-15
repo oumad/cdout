@@ -6,7 +6,7 @@
 //! connection pool per call. On Windows every closed client socket sits in
 //! TIME_WAIT for 2–4 minutes; the default ephemeral port range is ~16k.
 //! A tight refresh loop drains the pool machine-wide, breaking not just
-//! shuttle-io but any other process reaching the same host (e.g. Ollama).
+//! cdout but any other process reaching the same host (e.g. Ollama).
 //!
 //! RULE FOR THE WHOLE CRATE: never call `reqwest::Client::new()` or
 //! `reqwest::Client::builder().build()` directly. Always go through
@@ -45,7 +45,7 @@ fn build_client() -> Client {
         .pool_idle_timeout(POOL_IDLE_TIMEOUT)
         .tcp_keepalive(TCP_KEEPALIVE)
         .connect_timeout(CONNECT_TIMEOUT)
-        .user_agent(concat!("shuttle-io/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
         .build()
     {
         Ok(client) => client,

@@ -1,6 +1,6 @@
 //! Persistent multi-session chat history.
 //!
-//! Sessions are JSON files under `%APPDATA%/shuttle-io/sessions/<id>.json`.
+//! Sessions are JSON files under `%APPDATA%/cdout/sessions/<id>.json`.
 //! One file per session keeps the format auditable (you can `cat` it),
 //! sidebar-friendly (scan dir, parse metadata), and survives crashes — the
 //! frontend debounces saves so the worst-case data loss is the last ~500ms of
@@ -50,7 +50,9 @@ pub struct Session {
 fn sessions_dir() -> Result<PathBuf, String> {
     let base = dirs::config_dir()
         .ok_or_else(|| "Failed to locate user config directory".to_string())?;
-    let dir = base.join("shuttle-io").join(SESSIONS_DIR_NAME);
+    let dir = base
+        .join(crate::constants::APP_DATA_DIR_NAME)
+        .join(SESSIONS_DIR_NAME);
     fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create sessions directory: {}", e))?;
     Ok(dir)

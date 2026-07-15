@@ -20,7 +20,7 @@ export interface Message {
   content: string;
   tool_calls?: ToolCall[];
   /**
-   * Marks a shuttle-io-injected continuation/loop/interrupt nudge that needs
+   * Marks a cdout-injected continuation/loop/interrupt nudge that needs
    * `role: "user"` so the LLM API accepts it, but should render as a
    * system-style note in the UI — never as your own message.
    */
