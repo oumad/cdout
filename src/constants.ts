@@ -37,6 +37,7 @@ export const CMD = {
   GET_EXPLORER_STATUS: "get_explorer_status",
   GET_EXPLORER_DEBUG: "get_explorer_debug",
   GET_OLLAMA_MODELS: "get_ollama_models",
+  GET_PROVIDER_STATUS: "get_provider_status",
   GET_OLLAMA_URL: "get_ollama_url",
   SET_OLLAMA_URL: "set_ollama_url",
   GET_SELECTED_MODEL: "get_selected_model",

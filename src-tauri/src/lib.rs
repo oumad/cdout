@@ -103,6 +103,49 @@ async fn get_ollama_models() -> Result<Vec<String>, String> {
     Ok(models)
 }
 
+/// Snapshot of which providers are usable right now — drives the first-run
+/// onboarding. Unlike `get_ollama_models` (which swallows the Ollama
+/// connection error via `unwrap_or_default`, so the UI can't tell "not
+/// installed" from "installed, zero models"), this reports reachability
+/// honestly so the setup card can say the right thing.
+#[derive(serde::Serialize)]
+struct ProviderStatus {
+    ollama_reachable: bool,
+    ollama_model_count: usize,
+    openrouter_set: bool,
+    anthropic_set: bool,
+    /// True when at least one model can actually be selected: a cloud key is
+    /// set, or Ollama has ≥1 pulled model.
+    any_usable: bool,
+}
+
+#[tauri::command]
+async fn get_provider_status() -> Result<ProviderStatus, String> {
+    let url = config::get_ollama_url();
+    let (ollama_reachable, ollama_model_count) = match ollama::list_models(&url).await {
+        Ok(models) => (true, models.len()),
+        Err(_) => (false, 0),
+    };
+
+    let keys = config::load_api_keys();
+    let openrouter_set = keys
+        .openrouter
+        .as_ref()
+        .is_some_and(|k| !k.trim().is_empty());
+    let anthropic_set = keys
+        .anthropic
+        .as_ref()
+        .is_some_and(|k| !k.trim().is_empty());
+
+    Ok(ProviderStatus {
+        ollama_reachable,
+        ollama_model_count,
+        openrouter_set,
+        anthropic_set,
+        any_usable: ollama_model_count > 0 || openrouter_set || anthropic_set,
+    })
+}
+
 #[tauri::command]
 fn get_ollama_url() -> Result<String, String> {
     Ok(config::get_ollama_url())
@@ -586,6 +629,7 @@ pub fn run() {
             get_explorer_status,
             get_explorer_debug,
             get_ollama_models,
+            get_provider_status,
             get_ollama_url,
             set_ollama_url,
             get_selected_model,

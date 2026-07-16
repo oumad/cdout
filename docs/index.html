@@ -155,6 +155,11 @@ h1,h2,h3{text-wrap:balance;line-height:1.08;letter-spacing:-.02em;font-weight:65
 .traffic{display:flex;gap:6px}
 .traffic i{width:10px;height:10px;border-radius:50%;display:block}
 .traffic .r{background:#f0564a}.traffic .y{background:#f4b84a}.traffic .g{background:#42c774}
+/* Windows-style window controls: minimize / maximize / close, right-aligned. */
+.winctl{display:flex;align-items:center;margin-left:auto;margin-right:-6px}
+.winctl i{width:30px;height:26px;display:grid;place-items:center;color:var(--ink-3);border-radius:4px}
+.winctl i svg{width:11px;height:11px;stroke:currentColor;stroke-width:1.2;fill:none;stroke-linecap:round}
+.winctl i.cls{color:var(--ink-2)}
 
 /* ── Explorer window ── */
 .exp{left:40px;top:70px;width:520px;height:404px}
@@ -465,8 +470,12 @@ html.js .rev.in{opacity:1;transform:none}
           <!-- Explorer -->
           <div class="win exp">
             <div class="bar">
-              <span class="traffic"><i class="r"></i><i class="y"></i><i class="g"></i></span>
               <span class="t">File Explorer</span>
+              <span class="winctl" aria-hidden="true">
+                <i><svg viewBox="0 0 12 12"><line x1="1.5" y1="6" x2="10.5" y2="6"/></svg></i>
+                <i><svg viewBox="0 0 12 12"><rect x="1.75" y="1.75" width="8.5" height="8.5" rx="0.5"/></svg></i>
+                <i class="cls"><svg viewBox="0 0 12 12"><path d="M2 2 10 10M10 2 2 10"/></svg></i>
+              </span>
             </div>
             <div class="addr">
               <div class="crumb">
@@ -496,6 +505,11 @@ html.js .rev.in{opacity:1;transform:none}
                     <path d="M312 356h98" stroke="#34d399" stroke-width="52"/></g></svg>
               </span>
               <span class="t" style="color:var(--ink-2)">cdout</span>
+              <span class="winctl" aria-hidden="true">
+                <i><svg viewBox="0 0 12 12"><line x1="1.5" y1="6" x2="10.5" y2="6"/></svg></i>
+                <i><svg viewBox="0 0 12 12"><rect x="1.75" y="1.75" width="8.5" height="8.5" rx="0.5"/></svg></i>
+                <i class="cls"><svg viewBox="0 0 12 12"><path d="M2 2 10 10M10 2 2 10"/></svg></i>
+              </span>
             </div>
             <div class="body">
               <div class="chat" id="chat">

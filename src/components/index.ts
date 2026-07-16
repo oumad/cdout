@@ -7,5 +7,6 @@ export { QuestionApproval } from "./QuestionApproval";
 export { ChatInput } from "./ChatInput";
 export { SettingsPage } from "./SettingsPage";
 export { MigrationBanner } from "./MigrationBanner";
+export { ProviderSetup } from "./ProviderSetup";
 export { SessionsSidebar } from "./SessionsSidebar";
 export { ErrorBoundary } from "./ErrorBoundary";
