@@ -18,6 +18,7 @@ import type {
   Message,
   SpotlightSubmitPayload,
   ApiKeysResponse,
+  ProviderStatus,
   Skill,
   QuarantinedSkill,
   PendingQuestion,
@@ -29,6 +30,7 @@ import {
   AUTO_STEP_DELAY_MS,
   MAX_AUTO_STEPS,
   FILE_LIST_THRESHOLD,
+  MODEL_POLL_MS,
   EVENTS,
   TOOLS,
 } from "./constants";
@@ -45,6 +47,7 @@ import {
   ChatInput,
   SettingsPage,
   MigrationBanner,
+  ProviderSetup,
   SessionsSidebar,
 } from "./components";
 
@@ -106,6 +109,14 @@ function SpotlightApp() {
 
   async function submit() {
     if (!agentPrompt.trim()) return;
+    if (!modelName) {
+      // No usable model yet — sending would fail in the router. Point the user
+      // at the main window, where the first-run setup card lives.
+      showError(
+        "No model set up yet. Open cdout (from the tray) and pick a provider — local Ollama or a cloud key — to get started."
+      );
+      return;
+    }
     try {
       await api.spotlightSubmit(agentPrompt, modelName);
       setAgentPrompt("");
@@ -234,6 +245,15 @@ function MainApp() {
   // One-time migration banner — shown when legacy CLI/Antigravity/openai/gemini
   // configs are detected on disk and the user hasn't acked yet.
   const [showMigrationBanner, setShowMigrationBanner] = useState(false);
+
+  // First-run provider readiness — drives the onboarding setup card shown in
+  // the empty chat state when no model is usable yet.
+  const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(
+    null
+  );
+  const refreshProviderStatus = useCallback(() => {
+    api.getProviderStatus().then(setProviderStatus).catch(() => {});
+  }, []);
 
   // Sessions — persistent chat history sidebar.
   const {
@@ -453,6 +473,16 @@ function MainApp() {
     return () => { unlisten.then(fn => fn()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Poll provider readiness ONLY while no model is usable. Stops the moment
+  // the model list populates (Ollama came online or a key was saved), which
+  // also unmounts the setup card. Mirrors the useModels poll cadence.
+  useEffect(() => {
+    if (availableModels.length > 0) return;
+    refreshProviderStatus();
+    const id = setInterval(refreshProviderStatus, MODEL_POLL_MS);
+    return () => clearInterval(id);
+  }, [availableModels.length, refreshProviderStatus]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -1380,10 +1410,37 @@ function MainApp() {
           while busy (Claude.ai pattern). No more overlay covering messages. */}
       <section className="flex-1 flex flex-col relative overflow-hidden">
         {chatHistory.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center opacity-30 select-none">
-            <Bot size={48} />
-            <p className="mt-2 text-sm font-medium">Agent Ready</p>
-          </div>
+          // Once the first model fetch has resolved (ollamaConnected !== null)
+          // and there is still nothing usable, guide the user through setup
+          // instead of showing a misleading "Agent Ready".
+          ollamaConnected !== null && availableModels.length === 0 ? (
+            <ProviderSetup
+              status={providerStatus}
+              onRecheck={async () => {
+                await fetchModels();
+                refreshProviderStatus();
+              }}
+              onSaveKey={async (key) => {
+                await api.setOpenrouterKey(key);
+                try {
+                  const keys = await api.getApiKeys();
+                  setOpenrouterPreview(keys.openrouter_preview);
+                  setAnthropicPreview(keys.anthropic_preview);
+                } catch {
+                  // ignore — previews refresh on next Settings open
+                }
+                await fetchModels();
+                refreshProviderStatus();
+              }}
+              onOpenSettings={() => setIsSettingsOpen(true)}
+              onError={showError}
+            />
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center opacity-30 select-none">
+              <Bot size={48} />
+              <p className="mt-2 text-sm font-medium">Agent Ready</p>
+            </div>
+          )
         ) : (
           <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar scroll-smooth">
             {chatHistory.map((msg, idx) => (

@@ -5,6 +5,7 @@ import type {
   Message,
   AgentStepResult,
   ApiKeysResponse,
+  ProviderStatus,
   StreamChunk,
   ListSkillsResult,
   Session,
@@ -23,6 +24,10 @@ export function getExplorerDebug(): Promise<unknown> {
 // Models
 export function getOllamaModels(): Promise<string[]> {
   return invoke<string[]>(CMD.GET_OLLAMA_MODELS);
+}
+
+export function getProviderStatus(): Promise<ProviderStatus> {
+  return invoke<ProviderStatus>(CMD.GET_PROVIDER_STATUS);
 }
 
 export function getOllamaUrl(): Promise<string> {
