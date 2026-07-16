@@ -92,6 +92,20 @@ export interface SpotlightSubmitPayload {
   model: string;
 }
 
+/**
+ * Honest provider readiness, used by the first-run onboarding. Unlike the
+ * model list, this distinguishes "Ollama not reachable" from "reachable but
+ * no models pulled". `any_usable` is the single gate for whether the agent
+ * can run at all.
+ */
+export interface ProviderStatus {
+  ollama_reachable: boolean;
+  ollama_model_count: number;
+  openrouter_set: boolean;
+  anthropic_set: boolean;
+  any_usable: boolean;
+}
+
 // Skills
 export interface SkillRequirements {
   bins: string[];
