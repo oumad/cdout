@@ -26,7 +26,7 @@ interface ChatMessageProps {
  * Internal nudge messages (auto-step continuations, loop-detected notices,
  * interrupt confirmations) are stored with role="user" so the LLM API accepts
  * them, but should render distinctly so the user never confuses them with
- * their own input. Compact, gray, with a "shuttle internal" badge.
+ * their own input. Compact, gray, with a "cdout internal" badge.
  */
 function SyntheticNote({ content }: { content: string }) {
   return (
@@ -38,7 +38,7 @@ function SyntheticNote({ content }: { content: string }) {
         />
         <div className="flex-1 min-w-0">
           <div className="text-[9px] uppercase tracking-wider text-gray-600 font-semibold mb-0.5">
-            shuttle internal
+            cdout internal
           </div>
           <div className="text-gray-500 italic leading-snug whitespace-pre-wrap break-words">
             {content}
@@ -60,7 +60,7 @@ function ChatMessageImpl({
   // ReactMarkdown or a `.length` check downstream.
   const content = msg.content ?? "";
 
-  // Synthetic messages: shuttle-injected nudges that travel as role="user" but
+  // Synthetic messages: cdout-injected nudges that travel as role="user" but
   // are NOT user input. Render with the dedicated SyntheticNote shape.
   if (msg.synthetic) {
     return <SyntheticNote content={content} />;

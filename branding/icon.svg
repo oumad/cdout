@@ -1,0 +1,29 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="cdout">
+  <defs>
+    <!-- The app's "you -> agent" story: indigo (your prompt) to emerald (the agent). -->
+    <linearGradient id="stroke" x1="150" y1="120" x2="380" y2="392" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#818cf8"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+    <linearGradient id="tile" x1="256" y1="24" x2="256" y2="488" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d1424"/>
+      <stop offset="1" stop-color="#05070f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.42" cy="0.44" r="0.6">
+      <stop offset="0" stop-color="#6366f1" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#6366f1" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded desktop-tile ground, blue-biased near-black to match the UI. -->
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#tile)"/>
+  <rect x="16" y="16" width="480" height="480" rx="116" fill="url(#glow)"/>
+  <!-- Faint top screen-edge highlight. -->
+  <rect x="16.5" y="16.5" width="479" height="479" rx="115.5" fill="none" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1"/>
+
+  <!-- Terminal prompt: chevron + cursor underscore = >_ ("cd ... out"). -->
+  <g stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M175 150 L293 256 L175 362" stroke="url(#stroke)" stroke-width="56"/>
+    <path d="M312 356 L410 356" stroke="#34d399" stroke-width="52"/>
+  </g>
+</svg>

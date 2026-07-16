@@ -1,3 +1,8 @@
+/// Name of the app's data directory under the user config root
+/// (`%APPDATA%\cdout` on Windows). If this ever changes again, add a
+/// matching move to `config::migrate_legacy_data_dir`.
+pub const APP_DATA_DIR_NAME: &str = "cdout";
+
 pub const MAX_OUTPUT_LEN: usize = 2000;
 pub const MAX_FILES_TO_LIST: usize = 20;
 pub const TOOL_NAME: &str = "run_powershell";

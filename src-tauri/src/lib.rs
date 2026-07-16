@@ -225,22 +225,38 @@ fn has_legacy_credentials() -> Result<bool, String> {
         }
     }
     if let Some(c) = cfg.as_ref() {
-        if c.join("shuttle-io")
-            .join("antigravity_credentials.json")
-            .exists()
-        {
-            found = true;
-        }
-
-        // Legacy api_keys.json that still mentions openai/gemini → rewrite.
-        let path = c.join("shuttle-io").join("api_keys.json");
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            if raw.contains("\"openai\"") || raw.contains("\"gemini\"") {
+        // Probe both the current data dir and the pre-rename one: the
+        // shuttle-io → cdout migration merges old → new on every launch,
+        // but a locked file can leave legacy artefacts stranded in the old
+        // directory.
+        for dir in [
+            c.join(constants::APP_DATA_DIR_NAME),
+            c.join(config::LEGACY_APP_DATA_DIR_NAME),
+        ] {
+            if dir.join("antigravity_credentials.json").exists() {
                 found = true;
-                // Load through the new struct (drops unknown fields), save.
-                let cleaned = config::load_api_keys();
-                if let Err(e) = config::save_api_keys(&cleaned) {
-                    eprintln!("[migration] Failed to purge legacy api_keys.json fields: {}", e);
+            }
+
+            // api_keys.json that still mentions openai/gemini → rewrite in
+            // place through the new struct shape (drops the legacy fields) so
+            // those plaintext keys don't sit on disk, wherever the file is.
+            let path = dir.join("api_keys.json");
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if raw.contains("\"openai\"") || raw.contains("\"gemini\"") {
+                    found = true;
+                    if let Ok(cleaned) = serde_json::from_str::<config::ApiKeys>(&raw) {
+                        let rewrite = serde_json::to_string_pretty(&cleaned)
+                            .map_err(|e| e.to_string())
+                            .and_then(|json| {
+                                std::fs::write(&path, json).map_err(|e| e.to_string())
+                            });
+                        if let Err(e) = rewrite {
+                            eprintln!(
+                                "[migration] Failed to purge legacy api_keys.json fields: {}",
+                                e
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -249,7 +265,7 @@ fn has_legacy_credentials() -> Result<bool, String> {
 }
 
 /// Clean up the legacy on-disk artefacts a user may still have around after
-/// the OpenRouter migration. Always removes shuttle-io's own
+/// the OpenRouter migration. Always removes cdout's own
 /// `antigravity_credentials.json`. Removes the third-party CLI creds
 /// (~/.claude, ~/.codex) ONLY when `remove_third_party` is true — those
 /// belong to other tools, so we ask the user first.
@@ -258,10 +274,16 @@ fn cleanup_legacy_credentials(remove_third_party: bool) -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
 
     if let Some(c) = dirs::config_dir() {
-        let path = c.join("shuttle-io").join("antigravity_credentials.json");
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                errors.push(format!("antigravity_credentials.json: {}", e));
+        // Both dirs, same reason as in `has_legacy_credentials`.
+        for dir_name in [
+            constants::APP_DATA_DIR_NAME,
+            config::LEGACY_APP_DATA_DIR_NAME,
+        ] {
+            let path = c.join(dir_name).join("antigravity_credentials.json");
+            if path.exists() {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    errors.push(format!("{}: {}", path.display(), e));
+                }
             }
         }
     }
@@ -475,7 +497,7 @@ fn set_hotkey(hotkey: String) -> Result<(), String> {
 #[tauri::command]
 fn write_file_list(files: Vec<String>) -> Result<String, String> {
     use std::io::Write;
-    let temp_path = std::env::temp_dir().join("shuttle_files.txt");
+    let temp_path = std::env::temp_dir().join("cdout_files.txt");
     let mut file = std::fs::File::create(&temp_path)
         .map_err(|e| format!("Failed to create temp file: {}", e))?;
     for f in &files {
@@ -553,6 +575,10 @@ fn show_window(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Must run before anything touches the data dir (config reads, session
+    // dir creation), or the freshly created new dir would block the move.
+    config::migrate_legacy_data_dir();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -600,8 +626,8 @@ pub fn run() {
             spotlight_window.set_shadow(false).ok();
 
             // --- System Tray ---
-            let show_item = MenuItemBuilder::with_id("show", "Show Shuttle").build(app)?;
-            let quit_item = MenuItemBuilder::with_id("quit", "Quit Shuttle").build(app)?;
+            let show_item = MenuItemBuilder::with_id("show", "Show cdout").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit cdout").build(app)?;
             let tray_menu = MenuBuilder::new(app)
                 .item(&show_item)
                 .separator()
@@ -610,7 +636,7 @@ pub fn run() {
 
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().unwrap())
-                .tooltip("Shuttle")
+                .tooltip("cdout")
                 .menu(&tray_menu)
                 .on_menu_event(
                     move |app_handle: &tauri::AppHandle, event| match event.id().as_ref() {

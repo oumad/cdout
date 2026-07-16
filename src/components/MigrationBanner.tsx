@@ -9,7 +9,7 @@ interface MigrationBannerProps {
 }
 
 /**
- * One-time onboarding banner shown after the OpenRouter migration when shuttle-io
+ * One-time onboarding banner shown after the OpenRouter migration when cdout
  * detects legacy credentials (Claude Code OAuth, Codex CLI, Antigravity, or
  * old openai/gemini api_keys.json fields) on disk. Pointed at openrouter.ai
  * because the legacy auth paths are gone — the user has to pick a new home for
@@ -27,8 +27,8 @@ export function MigrationBanner({
       "Also delete ~/.claude/.credentials.json and ~/.codex/auth.json? " +
       "These files belong to other tools (Claude Code, Codex CLI). " +
       "Only remove them if you no longer use those CLIs. " +
-      "\n\nOK = delete shuttle-io artefacts + third-party CLI creds. " +
-      "Cancel = only delete shuttle-io's own antigravity_credentials.json."
+      "\n\nOK = delete cdout artefacts + third-party CLI creds. " +
+      "Cancel = only delete cdout's own antigravity_credentials.json."
     );
     setCleaning(true);
     try {
@@ -48,7 +48,7 @@ export function MigrationBanner({
             Cloud providers changed
           </div>
           <p className="text-xs text-amber-100/80 leading-relaxed">
-            shuttle-io now routes cloud LLM calls through{" "}
+            cdout now routes cloud LLM calls through{" "}
             <a
               href="https://openrouter.ai"
               target="_blank"
@@ -65,7 +65,7 @@ export function MigrationBanner({
           </p>
           <p className="text-[11px] text-amber-100/60 leading-relaxed mt-2">
             Your old credential files were left on disk untouched. You can
-            clean them up below or leave them — shuttle-io no longer reads
+            clean them up below or leave them — cdout no longer reads
             them either way.
           </p>
           <div className="mt-3 flex items-center gap-2 flex-wrap">

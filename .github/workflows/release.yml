@@ -1,0 +1,101 @@
+name: Release
+
+# Build Windows installers + a portable zip whenever a version tag is pushed.
+#   git tag v0.1.0 && git push origin v0.1.0
+# Produces a GitHub Release (draft by default — flip `releaseDraft` to false to
+# publish automatically) carrying:
+#   - cdout_<version>_x64-setup.exe   (NSIS installer)
+#   - cdout_<version>_x64_en-US.msi   (MSI installer)
+#   - cdout-<version>-portable-x64.zip (no-install, unzip-and-run)
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Allow a manual dry run from the Actions tab (builds but skips publishing).
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Builds the frontend + Rust app and bundles the NSIS + MSI installers,
+      # then creates/updates the GitHub Release and uploads them to it.
+      - name: Build app and create release
+        id: tauri
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Empty on a workflow_dispatch (branch ref) → tauri-action builds
+          # only and creates no release. A real tag push publishes the draft.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('cdout {0}', github.ref_name) || '' }}
+          releaseBody: |
+            Windows build of cdout ${{ github.ref_name }}.
+
+            **Install:** download the `.exe` (recommended) or `.msi` and run it.
+            **Portable:** download the `-portable-x64.zip`, unzip anywhere, run `cdout.exe`.
+
+            Settings and sessions live in `%APPDATA%\cdout`.
+          releaseDraft: true
+          prerelease: false
+
+      # The installers require admin/uninstall; a portable build is just the
+      # raw exe plus the bundled skills next to it (so `resource_dir()` resolves
+      # them) and a short readme. tauri-action already produced the exe above.
+      - name: Stage portable build
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "cdout.exe" -File |
+            Select-Object -First 1
+          if (-not $exe) { throw "Could not find cdout.exe in src-tauri/target/release" }
+
+          $stage = "portable/cdout"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $exe.FullName -Destination $stage
+          Copy-Item "src-tauri/skills" -Destination "$stage/skills" -Recurse
+          @"
+          cdout $version — portable build
+
+          Run cdout.exe. No installation required.
+          The global hotkey (default Ctrl+Alt+A) opens the spotlight prompt.
+          Settings, API keys, and sessions are stored in %APPDATA%\cdout.
+          "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
+
+          $zip = "cdout-$version-portable-x64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          "PORTABLE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload portable zip to release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" "$env:PORTABLE_ZIP" --clobber
