@@ -10,7 +10,7 @@ export function TitleBar() {
       <div className="flex items-center gap-2 pointer-events-none">
         <Terminal size={14} className="text-indigo-500" />
         <span className="text-[11px] text-gray-500 font-medium tracking-wide">
-          shuttle-io
+          cdout
         </span>
       </div>
       <div className="flex-1" />

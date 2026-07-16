@@ -11,7 +11,7 @@
 //! - Always send `usage: { include: true }` so future cost tracking is one
 //!   parser change away.
 //! - No `HTTP-Referer` / `X-Title` headers — privacy default; we don't broadcast
-//!   shuttle-io's request volume to the OpenRouter leaderboard.
+//!   cdout's request volume to the OpenRouter leaderboard.
 //! - Distinguish opaque OpenRouter infra failures from credential issues so the
 //!   UI can show "service issue, not your key" (Feb 2026 OR bug pattern).
 

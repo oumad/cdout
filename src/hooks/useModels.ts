@@ -44,7 +44,7 @@ export interface UseModelsOptions {
  * Callers pass a fresh object literal `{ onSwap: (...) => ... }` on every
  * render, so `opts` identity changed each render → `fetchModels` identity
  * changed each render → `useEffect(fetchModels, ollamaUrl)` fired on every
- * render → during streaming (setState per token) shuttle-io opened ~80
+ * render → during streaming (setState per token) the app opened ~80
  * TCP connections per second to Ollama, drained the Windows ephemeral port
  * pool, and broke every other process on the machine.
  *

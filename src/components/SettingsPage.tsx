@@ -130,7 +130,7 @@ function ProvidersCategory({
     <>
       <SectionHeader
         title="Providers"
-        description="Configure where shuttle.io sends model requests."
+        description="Configure where cdout sends model requests."
       />
 
       <SubSection

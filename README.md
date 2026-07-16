@@ -1,4 +1,4 @@
-# shuttle-io
+# cdout
 
 A Windows-native AI assistant. Press a global hotkey, type "rename my photos by
 date" while files are selected in Explorer, and an LLM proposes a PowerShell
@@ -63,9 +63,9 @@ After first launch:
   step.
 - **Ask-user tool** — when the request is ambiguous (rename pattern, output
   format, overwrite vs new file), the model can call `ask_user_question` and
-  shuttle-io renders a multiple-choice picker.
+  cdout renders a multiple-choice picker.
 - **Sessions sidebar** — every spotlight prompt becomes a persistent session
-  (auto-saved to `%APPDATA%\shuttle-io\sessions\<id>.json`). The sidebar on
+  (auto-saved to `%APPDATA%\cdout\sessions\<id>.json`). The sidebar on
   the left lists past chats by recency. Click to resume; rename or delete on
   hover.
 - **Loop detection** — three patterns (exact-repeat, ping-pong, no-progress)
@@ -73,7 +73,7 @@ After first launch:
   also drops tool definitions from the next request so the model is forced
   into a text-only reassessment.
 - **Skills** — `*.md` files in `src-tauri/skills/` (bundled) or
-  `%APPDATA%\shuttle-io\skills\` (user) get injected into the system prompt.
+  `%APPDATA%\cdout\skills\` (user) get injected into the system prompt.
   User-supplied skills are scanned for unsafe patterns and quarantined if
   flagged.
 
@@ -99,7 +99,7 @@ After first launch:
 | `features/loop_detector.rs` | Process-wide singleton. Three patterns + four-state escalation. Pattern-keyed `warning_seen` so no-progress can reach Block/Break |
 | `features/prompts.rs` | `PromptSection` trait, `sends_native_tool_specs` flag (`false` for `ollama:*` to get the longer prose tool catalog) |
 | `features/skills.rs` | YAML-frontmatter `.md` loader, safety scanner with quarantine, `LoadedSkills { skills, quarantined }` return type |
-| `features/sessions.rs` | Per-session JSON files in `%APPDATA%\shuttle-io\sessions\` |
+| `features/sessions.rs` | Per-session JSON files in `%APPDATA%\cdout\sessions\` |
 | `features/explorer.rs` | Windows COM bridge to active Explorer window (`IShellWindows`) |
 | `tools/mod.rs` | `Tool` trait, `ToolRegistry`, `validate_and_execute` |
 | `tools/powershell.rs` | The PowerShell exec tool. Tracks PID for kill, truncates output |
@@ -121,7 +121,7 @@ After first launch:
 | `hooks/useError.ts` | Auto-dismissing error toast state |
 | `hooks/useSessions.ts` | Session CRUD + debounced auto-save (500ms) |
 | `components/SessionsSidebar.tsx` | Collapsible left sidebar with "New chat", session list, rename, delete |
-| `components/ChatMessage.tsx` | Renders user / assistant / tool messages. Renders `synthetic: true` messages as a "shuttle internal" gray note (not as user input) |
+| `components/ChatMessage.tsx` | Renders user / assistant / tool messages. Renders `synthetic: true` messages as a "cdout internal" gray note (not as user input) |
 | `components/CommandApproval.tsx` | Editable PowerShell proposal with Approve / Approve-all / Reject-with-feedback / Dismiss |
 | `components/QuestionApproval.tsx` | Radio/checkbox UI for `ask_user_question` with an "Other (free text)" fallback |
 | `components/ModelSelector.tsx` | Provider-grouped `<optgroup>` (`Local (Ollama)` / `Anthropic (direct · cached)` / `OpenRouter`) |
@@ -199,7 +199,7 @@ Use `ffmpeg -i input.mp4 -vf scale=1280:720 out.mp4` to resize.
 - **Bundled** skills live in `src-tauri/skills/` and ship with the binary.
   They are trusted — NOT run through the safety scanner. Treat any PR that
   adds a bundled skill as a security review.
-- **User** skills live in `%APPDATA%\shuttle-io\skills\` and ARE scanned. Hits
+- **User** skills live in `%APPDATA%\cdout\skills\` and ARE scanned. Hits
   on prompt-injection wording (`ignore previous instructions`,
   `<system>`, `you are now`), destructive shell (`rm -rf /`, `chmod 777`,
   `format c:`, `dd if=/dev/zero`), or pipe-to-shell (`curl ... | sh`,
@@ -232,10 +232,15 @@ anything else                 OpenRouter (default)
 
 | Path | Purpose |
 |------|---------|
-| `%APPDATA%\shuttle-io\shuttle_config.json` | Ollama URL, hotkey, selected model, `show_free_openrouter_models`, `openrouter_disclosure_ack` |
-| `%APPDATA%\shuttle-io\api_keys.json` | `{ openrouter, anthropic }` plaintext (server-side only — never returned to renderer; masked `…3fa1` preview is sent instead) |
-| `%APPDATA%\shuttle-io\sessions\<id>.json` | One file per session — meta + full message history. Sidebar parses meta only |
-| `%APPDATA%\shuttle-io\skills\*.md` | User-supplied skills (scanned + quarantined as needed) |
+| `%APPDATA%\cdout\cdout_config.json` | Ollama URL, hotkey, selected model, `show_free_openrouter_models`, `openrouter_disclosure_ack` |
+| `%APPDATA%\cdout\api_keys.json` | `{ openrouter, anthropic }` plaintext (server-side only — never returned to renderer; masked `…3fa1` preview is sent instead) |
+| `%APPDATA%\cdout\sessions\<id>.json` | One file per session — meta + full message history. Sidebar parses meta only |
+| `%APPDATA%\cdout\skills\*.md` | User-supplied skills (scanned + quarantined as needed) |
+
+On first launch after the shuttle-io → cdout rename, the app moves
+`%APPDATA%\shuttle-io\` to `%APPDATA%\cdout\` (and `shuttle_config.json` to
+`cdout_config.json`) automatically, so keys, sessions, and user skills carry
+over. See `config::migrate_legacy_data_dir`.
 
 ---
 
@@ -254,7 +259,7 @@ anything else                 OpenRouter (default)
 | `get_show_free_openrouter_models` / `set_show_free_openrouter_models` | | Free tier hidden by default (FP4 quantization risk) |
 | `get_openrouter_disclosure_ack` / `set_openrouter_disclosure_ack` | | One-shot migration banner ack |
 | `has_legacy_credentials` | `bool` | Detects + auto-purges legacy `openai`/`gemini` fields from `api_keys.json` |
-| `cleanup_legacy_credentials` | | Removes shuttle-io's antigravity creds always; third-party CLI files only when `removeThirdParty: true` |
+| `cleanup_legacy_credentials` | | Removes cdout's antigravity creds always; third-party CLI files only when `removeThirdParty: true` |
 | `get_hotkey` / `set_hotkey` | | |
 | `init_agent_conversation` | `Vec<Message>` | Builds the system + initial user message. Takes optional `model` to switch native-tool-specs flag |
 | `list_sessions` | `Vec<SessionMeta>` | Sidebar list, sorted by `last_active_at` desc |
@@ -273,9 +278,9 @@ anything else                 OpenRouter (default)
 
 - **Ollama path** — fully local. Prompts never leave the machine.
 - **Anthropic direct path** — prompts go straight to `api.anthropic.com` with
-  your key. No shuttle-io intermediary.
+  your key. No cdout intermediary.
 - **OpenRouter path** — prompts go to `openrouter.ai`, which forwards to the
-  upstream provider. shuttle-io pins `data_collection: "deny"` and
+  upstream provider. cdout pins `data_collection: "deny"` and
   `allow_fallbacks: false` on every request. OpenRouter still logs metadata
   by default; their training-opt-out is configured on the OpenRouter
   dashboard side. The migration banner discloses this in-product.
@@ -293,15 +298,18 @@ anything else                 OpenRouter (default)
   - `sessions.rs` — title generation (Unicode, truncation, empty), path-traversal rejection, create/load roundtrip, ordering by `last_active_at` desc, atomic write (tmp + rename), skip-corrupt-files, delete idempotency
   - `router.rs` — every prefix permutation including `anthropic:anthropic/...` and bare `anthropic/...`
   - `skills.rs` — every safety rule, case-insensitive matches, the curl-without-pipe-is-safe regression, wget-pipe-to-bash detection
-  - `config.rs` — legacy `openai`/`gemini` field drop, default seed
+  - `config.rs` — legacy `openai`/`gemini` field drop, default seed, data-dir
+    migration (fast-path move, merge-without-clobber, stranded-state healing,
+    fresh-install no-op)
   - `tools/*.rs` — registry lookup, `ask_user_question` validation, PowerShell exec + failure exit codes
   - `agent.rs` — tool-proposal extraction, AgentStepResult serialization shape, loop-verdict escalation
 
-- Frontend: **19 vitest tests** (`npm test`).
+- Frontend: **23 vitest tests** (`npm test`).
   - `agent.test.ts` — `isTaskComplete` patterns
   - `useError.test.ts` — show/clear/auto-dismiss timing
+  - `useModels.test.ts` — model-list reconciliation + stale-slug swap
   - `QuestionApproval.test.tsx` — radio + multi-select + custom-answer paths
-  - `ChatMessage.test.tsx` — synthetic vs real-user rendering distinction (the "shuttle internal" badge)
+  - `ChatMessage.test.tsx` — synthetic vs real-user rendering distinction (the "cdout internal" badge)
 
 Run both via `cargo test --lib && npm test` from project root.
 
@@ -344,5 +352,5 @@ Output lands in `src-tauri/target/release/bundle/`.
 ## License
 
 MIT. Personal-use desktop assistant — third-party provider terms apply (don't
-ship shuttle-io as a SaaS product without dealing with Anthropic / OpenAI /
+ship cdout as a SaaS product without dealing with Anthropic / OpenAI /
 Google ToS yourself).

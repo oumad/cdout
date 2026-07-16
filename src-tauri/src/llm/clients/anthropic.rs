@@ -214,7 +214,7 @@ pub async fn chat_anthropic_stream(
 
     // Direct Anthropic path is API-key-only. The Claude Code OAuth shortcut
     // was removed in the OpenRouter migration: Anthropic's anti-abuse
-    // throttling on consumer OAuth (the bare "Error" 429s shuttle-io kept
+    // throttling on consumer OAuth (the bare "Error" 429s this app kept
     // hitting) wasn't worth keeping alive. Users who want frontier Claude
     // models go through OpenRouter; users who want prompt caching paste a
     // real API key (sk-ant-api-*) into Settings.

@@ -272,7 +272,9 @@ pub fn load_all_skills(resource_dir: Option<PathBuf>) -> LoadedSkills {
 
     // 2. Load user skills (scanned; overrides bundled by name if safe).
     if let Some(config_dir) = dirs::config_dir() {
-        let user_dir = config_dir.join("shuttle-io").join("skills");
+        let user_dir = config_dir
+            .join(crate::constants::APP_DATA_DIR_NAME)
+            .join("skills");
         let (skills, q) = load_skills_from_dir(&user_dir, SkillTrust::User);
         for skill in skills {
             skills_map.insert(skill.metadata.name.clone(), skill);
