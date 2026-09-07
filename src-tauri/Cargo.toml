@@ -1,6 +1,6 @@
 [package]
 name = "cdout"
-version = "0.2.0"
+version = "0.3.0"
 description = "cdout — an AI assistant that turns file-manager selections into approved shell commands"
 authors = ["Mohamed Oumoumad <m.oumoumad@gear-productions.com>"]
 edition = "2021"

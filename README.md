@@ -541,6 +541,24 @@ result now says so explicitly.
 
 ---
 
+## Lineage
+
+cdout continues [**proton-io**](https://oumad.github.io/proton-io/) — *"a
+shortcut to any task"* — a Windows launcher where you wrote the scripts
+yourself, gave them hotkeys, and picked one from a searchable menu. It already
+had the two ideas this is built on: a global hotkey over any window, and
+scripts that receive the current directory and selection straight from the
+file manager.
+
+What changed is *who writes the script*. In proton-io you built each task up
+front in a script builder, wiring typed inputs — text fields, file pickers,
+dropdowns, sliders — into a command. In cdout you describe the outcome in a
+sentence and the model proposes the command, which you read and approve. The
+parameter pickers became `ask_user_question`; the script library became
+skills; the Windows-only COM context grew a Finder counterpart.
+
+---
+
 ## License
 
 MIT. Personal-use desktop assistant — third-party provider terms apply (don't
