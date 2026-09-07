@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Loader2,
   Check,
+  Server,
   Settings as SettingsIcon,
 } from "lucide-react";
 import type { ProviderStatus } from "../types";
@@ -17,6 +18,10 @@ interface ProviderSetupProps {
   onRecheck: () => void | Promise<void>;
   /** Persist an OpenRouter key, then refresh models. */
   onSaveKey: (key: string) => Promise<void>;
+  /** Current Ollama server URL. */
+  ollamaUrl: string;
+  /** Persist a new Ollama URL, then re-check reachability + models. */
+  onSaveOllamaUrl: (url: string) => Promise<void>;
   onOpenSettings: () => void;
   onError?: (msg: string) => void;
 }
@@ -32,12 +37,29 @@ export function ProviderSetup({
   status,
   onRecheck,
   onSaveKey,
+  ollamaUrl,
+  onSaveOllamaUrl,
   onOpenSettings,
   onError,
 }: ProviderSetupProps) {
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [rechecking, setRechecking] = useState(false);
+  const [url, setUrl] = useState(ollamaUrl);
+  const [connecting, setConnecting] = useState(false);
+
+  async function handleConnectUrl() {
+    const trimmed = url.trim();
+    if (!trimmed || trimmed === ollamaUrl) return;
+    setConnecting(true);
+    try {
+      await onSaveOllamaUrl(trimmed);
+    } catch (e) {
+      onError?.(String(e));
+    } finally {
+      setConnecting(false);
+    }
+  }
 
   async function handleSave() {
     const trimmed = key.trim();
@@ -96,8 +118,8 @@ export function ProviderSetup({
               </div>
             </div>
             <p className="text-xs text-gray-400 leading-relaxed mb-3">
-              Run models on your own machine with Ollama. Prompts never leave
-              your computer.
+              Run models with Ollama — on this machine or another one on your
+              network. Prompts never leave your hardware.
             </p>
 
             <div className="bg-black/30 border border-gray-800 rounded-lg p-3 text-xs mb-3">
@@ -112,7 +134,8 @@ export function ProviderSetup({
                     <Check size={13} /> Ollama is running
                   </span>
                   <span className="text-gray-400">
-                    No models yet — pull one, then re-check:
+                    No models yet — pull one that supports tool calling, then
+                    re-check:
                   </span>
                   <code className="block bg-black/50 border border-gray-800 rounded px-2 py-1.5 text-emerald-300 font-mono text-[11px] select-all">
                     ollama pull llama3.2
@@ -121,13 +144,54 @@ export function ProviderSetup({
               ) : (
                 <div className="flex flex-col gap-1.5">
                   <span className="text-amber-400 font-medium">
-                    Ollama not detected
+                    No Ollama at {ollamaUrl}
                   </span>
                   <span className="text-gray-400">
-                    Install it, start the app, then re-check.
+                    Install it here and re-check, or point cdout at another
+                    machine below.
                   </span>
                 </div>
               )}
+            </div>
+
+            {/* Ollama is very often on another box — a homelab server, a
+                desktop with the GPU. Without this the only paths onboarding
+                offered were "install it here" or "use the cloud", and the URL
+                field was buried in Settings. */}
+            <div className="mb-3">
+              <label
+                htmlFor="ollama-url-setup"
+                className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-1.5"
+              >
+                <Server size={11} className="text-gray-500" />
+                Already running on another machine?
+              </label>
+              <div className="flex items-center gap-1.5">
+                <input
+                  id="ollama-url-setup"
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleConnectUrl();
+                  }}
+                  placeholder="http://192.168.1.50:11434"
+                  aria-label="Ollama server URL"
+                  className="flex-1 min-w-0 bg-black/40 border border-gray-700 rounded-md px-2.5 py-1.5 text-xs text-gray-200 placeholder-gray-600 font-mono focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  onClick={handleConnectUrl}
+                  disabled={connecting || !url.trim() || url.trim() === ollamaUrl}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600/90 hover:bg-emerald-500 text-white rounded-md text-xs font-medium transition disabled:opacity-40"
+                >
+                  {connecting ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Check size={12} />
+                  )}
+                  Connect
+                </button>
+              </div>
             </div>
 
             <div className="mt-auto flex items-center gap-2">

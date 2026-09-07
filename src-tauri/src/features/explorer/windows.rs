@@ -1,3 +1,4 @@
+use super::ExplorerState;
 use serde::Serialize;
 use windows::core::{ComInterface, Result};
 use windows::Win32::Foundation::HWND;
@@ -12,12 +13,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetDesktopWindow, GetForegroundWindow, GetWindow, GetWindowTextW,
     IsWindowVisible, GW_CHILD, GW_HWNDNEXT,
 };
-
-#[derive(Serialize)]
-pub struct ExplorerState {
-    pub path: String,
-    pub selected_files: Vec<String>,
-}
 
 #[derive(Serialize, Debug)]
 pub struct ExplorerDebugInfo {
@@ -338,7 +333,13 @@ pub fn get_active_explorer_info() -> Result<ExplorerState> {
         }
 
         // Sort files using natural sort
-        selected_files.sort_by(|a, b| natord::compare(a, b));
+        // Case-INSENSITIVE natural order, to match how Explorer and Finder both
+        // display a folder. With case-sensitive ordering, `SCENE_03.MOV` sorts
+        // before `scene_01.mov`, so the numbered list handed to the model is in a
+        // different order than the one the user is looking at — which is how a
+        // model ends up asking "in what order did you want these?" or, worse,
+        // silently assembling a reel backwards.
+        selected_files.sort_by(|a, b| natord::compare_ignore_case(a, b));
 
         Ok(ExplorerState {
             path,

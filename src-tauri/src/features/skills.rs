@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // --- Safety scanner ---
 //
@@ -144,15 +143,9 @@ fn parse_skill_file(path: &Path) -> Result<(SkillMetadata, String), String> {
     Ok((metadata, body))
 }
 
-fn binary_exists(name: &str) -> bool {
-    Command::new("where.exe")
-        .arg(name)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 fn check_requirements(reqs: &SkillRequirements) -> (bool, Vec<String>) {
+    use crate::platform::binary_exists;
+
     let mut missing = Vec::new();
 
     // ALL bins must exist
@@ -179,7 +172,7 @@ fn check_requirements(reqs: &SkillRequirements) -> (bool, Vec<String>) {
 
 /// Whether to apply the safety scanner to skills from a given source.
 /// Bundled skills (shipped with the binary) are trusted; user skills (dropped
-/// into AppData) are scanned because they are an attack surface.
+/// into the app data dir) are scanned because they are an attack surface.
 #[derive(Clone, Copy, Debug)]
 enum SkillTrust {
     Bundled,

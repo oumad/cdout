@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  cdout's whole purpose is running the user's chosen shell command against the
+  user's own files, so the App Sandbox is deliberately absent — a sandboxed
+  build could not exec ffmpeg or touch files outside its container.
+
+  Kept to the two entitlements actually required under a hardened runtime:
+  Apple Events (Finder introspection) and JIT (the WebKit webview). Broader
+  ones like disable-library-validation are not needed to launch Homebrew
+  binaries, and each one widens what a compromised renderer could do.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+</dict>
+</plist>

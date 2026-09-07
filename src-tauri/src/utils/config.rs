@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 /// Default global hotkey. Public so the hotkey-registration path in `lib.rs`
 /// can fall back to it when a user-set value fails to parse.
+/// Default spotlight hotkey. macOS gets Cmd rather than Ctrl: Ctrl+Alt+letter
+/// is unidiomatic there and collides with the system's Ctrl-based text
+/// navigation bindings.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_HOTKEY: &str = "Cmd+Alt+A";
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_HOTKEY: &str = "Ctrl+Alt+A";
 const CONFIG_FILE_NAME: &str = "cdout_config.json";
 
@@ -356,6 +362,18 @@ mod tests {
         assert!(new.join("sessions").join("s1.json").is_file());
         assert!(!old.join("sessions").join("s1.json").exists());
         fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn default_hotkey_parses() {
+        // `lib.rs` calls `.expect()` on this at startup, so a malformed
+        // default panics the app on launch instead of degrading gracefully.
+        // The macOS default differs from the Windows one, which is exactly
+        // the kind of divergence that goes unnoticed until launch day.
+        use tauri_plugin_global_shortcut::Shortcut;
+        DEFAULT_HOTKEY
+            .parse::<Shortcut>()
+            .unwrap_or_else(|e| panic!("DEFAULT_HOTKEY '{DEFAULT_HOTKEY}' must parse: {e}"));
     }
 
     #[test]

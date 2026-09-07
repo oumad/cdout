@@ -1,7 +1,7 @@
 [package]
 name = "cdout"
-version = "0.1.0"
-description = "cdout — a Windows-native AI assistant that turns Explorer selections into approved PowerShell actions"
+version = "0.2.0"
+description = "cdout — an AI assistant that turns file-manager selections into approved shell commands"
 authors = ["Mohamed Oumoumad <m.oumoumad@gear-productions.com>"]
 edition = "2021"
 
@@ -18,20 +18,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# `macos-private-api` backs `macOSPrivateApi` in tauri.conf.json, without which
+# the transparent spotlight/main windows render opaque on macOS. It is inert on
+# other targets but must be declared unconditionally, because tauri-build
+# validates the feature list against the shared config on every platform.
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-windows = { version = "0.52.0", features = [
-    "Win32_Foundation",
-    "Win32_System_Com",
-    "Win32_System_Ole",
-    "Win32_System_Variant",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-] }
-urlencoding = "2.1.3"
 reqwest = { version = "0.12.9", features = ["json", "stream"] }
 tokio = { version = "1.49.0", features = ["full"] }
 natord = "1.0.9"
@@ -42,3 +37,20 @@ futures-util = "0.3"
 bytes = "1"
 serde_yaml = "0.9"
 
+# Explorer introspection via COM. Windows-only: an unconditional dependency
+# here is what stops the crate compiling on macOS at all.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52.0", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# Decoding the `file:///` URLs Explorer reports as a tab's location.
+urlencoding = "2.1.3"
+
+# `killpg`, so cancelling a command takes down ffmpeg and friends with it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

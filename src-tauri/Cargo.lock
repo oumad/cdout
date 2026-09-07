@@ -404,12 +404,13 @@ dependencies = [
 
 [[package]]
 name = "cdout"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "chrono",
  "dirs 5.0.1",
  "futures-util",
+ "libc",
  "natord",
  "rand 0.8.5",
  "reqwest",

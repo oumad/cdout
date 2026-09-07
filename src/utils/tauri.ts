@@ -10,6 +10,7 @@ import type {
   ListSkillsResult,
   Session,
   SessionMeta,
+  PlatformInfo,
 } from "../types";
 
 // Explorer
@@ -19,6 +20,14 @@ export function getExplorerStatus(): Promise<ExplorerState> {
 
 export function getExplorerDebug(): Promise<unknown> {
   return invoke(CMD.GET_EXPLORER_DEBUG);
+}
+
+// Platform
+/** `listFilePath` is substituted into `read_list_hint` when provided. */
+export function getPlatformInfo(listFilePath?: string): Promise<PlatformInfo> {
+  return invoke<PlatformInfo>(CMD.GET_PLATFORM_INFO, {
+    listFilePath: listFilePath ?? null,
+  });
 }
 
 // Models
@@ -116,11 +125,11 @@ export function runAgentStepStream(
   });
 }
 
-export function executePowershell(
+export function executeShellCommand(
   command: string,
   cwd: string | null
 ): Promise<string> {
-  return invoke<string>(CMD.EXECUTE_POWERSHELL, { command, cwd });
+  return invoke<string>(CMD.EXECUTE_SHELL_COMMAND, { command, cwd });
 }
 
 export interface RunningCommand {
