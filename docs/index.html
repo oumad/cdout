@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>cdout — talk to your files, approve the command</title>
-<meta name="description" content="cdout is a Windows-native AI assistant. Select files in Explorer, press a hotkey, describe what you want — it writes the PowerShell and waits for your approval before running anything." />
+<meta name="description" content="cdout is a native AI assistant for Windows and macOS. Select files in Explorer or Finder, press a hotkey, describe what you want — it writes the command and waits for your approval before running anything." />
 <meta name="theme-color" content="#05070f" />
 <script>document.documentElement.classList.add('js')</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cdefs%3E%3ClinearGradient id='s' x1='150' y1='120' x2='380' y2='392' gradientUnits='userSpaceOnUse'%3E%3Cstop stop-color='%23818cf8'/%3E%3Cstop offset='1' stop-color='%2334d399'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='16' y='16' width='480' height='480' rx='116' fill='%23070b16'/%3E%3Cg fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M175 150 293 256 175 362' stroke='url(%23s)' stroke-width='56'/%3E%3Cpath d='M312 356h98' stroke='%2334d399' stroke-width='52'/%3E%3C/g%3E%3C/svg%3E" />
@@ -425,23 +425,23 @@ html.js .rev.in{opacity:1;transform:none}
 <main>
 <!-- ══ Hero ══ -->
 <section class="hero wrap">
-  <p class="eyebrow">Windows-native&nbsp;·&nbsp;local or cloud&nbsp;·&nbsp;open source</p>
+  <p class="eyebrow">Windows &amp; macOS&nbsp;·&nbsp;local or cloud&nbsp;·&nbsp;open source</p>
   <h1>Talk to your files.<br><span class="grad">Approve the command.</span> Done.</h1>
   <p class="lede">
-    Select files in Explorer, press a hotkey, and say what you want in plain English.
-    cdout writes the PowerShell — and never runs a line until you approve it.
+    Select files in Explorer or Finder, press a hotkey, and say what you want in plain English.
+    cdout writes the command — PowerShell on Windows, zsh on macOS — and never runs a line until you approve it.
   </p>
   <div class="cta">
     <a class="btn btn-primary" href="https://github.com/oumad/cdout/releases/latest">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
-      Download for Windows
+      Download
     </a>
     <a class="btn btn-ghost" href="https://github.com/oumad/cdout">
       <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2A10 10 0 0 0 2 12c0 4.42 2.87 8.17 6.84 9.5.5.09.66-.22.66-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.9-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.16.58.67.48A10 10 0 0 0 22 12 10 10 0 0 0 12 2z"/></svg>
       View source
     </a>
   </div>
-  <p class="fineprint"><b>Free · MIT</b> &nbsp;·&nbsp; Windows 10 / 11 &nbsp;·&nbsp; installer · portable · <b>no account</b></p>
+  <p class="fineprint"><b>Free · MIT</b> &nbsp;·&nbsp; Windows 10 / 11 · macOS 10.15+ &nbsp;·&nbsp; installer · portable · <b>no account</b></p>
 </section>
 
 <!-- ══ The self-playing stage ══ -->
@@ -579,15 +579,15 @@ html.js .rev.in{opacity:1;transform:none}
   <div class="steps">
     <div class="step rev"><span class="thread"></span>
       <div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4Z"/><path d="M3 7v6l9 4 9-4V7"/></svg></div>
-      <h3>Select</h3><p>Highlight files or a folder in Windows Explorer. cdout reads the selection over COM.</p>
+      <h3>Select</h3><p>Highlight files or a folder in Explorer or Finder. cdout reads the selection over COM on Windows, AppleScript on macOS.</p>
     </div>
     <div class="step rev"><span class="thread"></span>
       <div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg></div>
-      <h3>Prompt</h3><p>Hit <code style="font-family:var(--mono);font-size:12px;color:var(--you)">Ctrl+Alt+A</code>, describe the outcome in a sentence.</p>
+      <h3>Prompt</h3><p>Hit <code style="font-family:var(--mono);font-size:12px;color:var(--you)">Ctrl+Alt+A</code> (<code style="font-family:var(--mono);font-size:12px;color:var(--you)">Cmd+Alt+A</code> on macOS), describe the outcome in a sentence.</p>
     </div>
     <div class="step rev"><span class="thread"></span>
       <div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div>
-      <h3>Approve</h3><p>Read the exact PowerShell it proposes. Edit it, reject with feedback, or run it.</p>
+      <h3>Approve</h3><p>Read the exact command it proposes. Edit it, reject with feedback, or run it.</p>
     </div>
     <div class="step rev">
       <div class="si"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>
@@ -603,11 +603,11 @@ html.js .rev.in{opacity:1;transform:none}
   <div class="grid-f">
     <div class="card rev">
       <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg></div>
-      <h3>Explorer-aware</h3><p>The agent sees your current folder and selection through the Windows COM bridge. <b>“Rename these”</b> just works — no paths to type.</p>
+      <h3>Explorer &amp; Finder aware</h3><p>The agent sees your current folder and selection — through the Windows COM bridge, or AppleScript on macOS. <b>“Rename these”</b> just works — no paths to type.</p>
     </div>
     <div class="card rev">
       <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg></div>
-      <h3>One tool: PowerShell</h3><p>Every action is a single, editable <code>run_powershell</code> proposal. Approve, edit inline, or reject with a note the model reads back.</p>
+      <h3>One tool: your shell</h3><p>Every action is a single, editable proposal — <code>run_powershell</code> on Windows, <code>run_shell</code> (zsh) on macOS. Approve, edit inline, or reject with a note the model reads back.</p>
     </div>
     <div class="card rev">
       <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></div>
@@ -673,7 +673,7 @@ html.js .rev.in{opacity:1;transform:none}
 <section class="band wrap dl" id="download">
   <p class="eyebrow rev center">get it</p>
   <h2 class="rev center" style="margin-top:14px">Download cdout</h2>
-  <p class="sub rev center">Every tagged release ships three ways to run it. Pick one.</p>
+  <p class="sub rev center">Every tagged release ships Windows and macOS builds. Pick one.</p>
   <div class="inner" style="margin-top:44px">
     <div class="rev">
       <div class="manifest">
@@ -694,11 +694,24 @@ html.js .rev.in{opacity:1;transform:none}
           <span class="ai"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg></span>
           <span class="meta"><span class="nm">cdout-portable-x64.zip</span><span class="ds">Unzip anywhere, run cdout.exe — no install</span></span>
         </a>
+        <div class="mh" style="margin-top:18px">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></svg>
+          latest release · macOS universal
+        </div>
+        <a class="artifact" href="https://github.com/oumad/cdout/releases/latest">
+          <span class="ai"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a5 5 0 0 0-5 5c0 3 2 4 2 7 0 4-2 4-2 6h10c0-2-2-2-2-6 0-3 2-4 2-7a5 5 0 0 0-5-5Z"/></svg></span>
+          <span class="meta"><span class="nm">cdout_universal.dmg</span><span class="ds">Intel + Apple silicon — drag to Applications</span></span>
+          <span class="rec">recommended</span>
+        </a>
       </div>
       <p class="note">
-        First launch: press <code>Ctrl+Alt+A</code> anywhere to open the spotlight. Add a model key
-        under Settings → Providers, or point it at a running Ollama. Everything lives in
-        <code>%APPDATA%\cdout</code>.
+        <b>Windows:</b> press <code>Ctrl+Alt+A</code> anywhere to open the spotlight. Everything lives in
+        <code>%APPDATA%\cdout</code>.<br>
+        <b>macOS:</b> the build is unsigned, so the first launch needs a right-click →
+        <b>Open</b>. Press <code>Cmd+Alt+A</code> for the spotlight, and allow the Finder
+        permission prompt — that is how cdout reads your selection. Everything lives in
+        <code>~/Library/Application Support/cdout</code>.<br>
+        Either way: add a model key under Settings → Providers, or point it at a running Ollama.
       </p>
     </div>
     <div class="rev">
