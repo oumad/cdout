@@ -22,6 +22,14 @@ on:
 permissions:
   contents: write
 
+# One release per tag, ever. Two runs for the same tag both reach
+# tauri-action's create-or-update step and can produce duplicate draft
+# releases or collide uploading the same asset. Never cancel a run that may
+# already be mid-upload — queue behind it instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     strategy:
