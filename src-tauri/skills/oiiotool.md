@@ -20,4 +20,4 @@ You have **oiiotool** (OpenImageIO) available for professional image processing,
 - oiiotool handles high-dynamic-range formats (EXR, HDR) natively.
 - Use `--colorconvert` for proper ACES/linear/sRGB transforms.
 - Supports OIIO expressions and multi-image stacks.
-- For batch processing, use PowerShell loops and output to new files.
+- For batch processing, loop over the selected files and output to new files.

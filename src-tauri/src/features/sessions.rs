@@ -1,6 +1,7 @@
 //! Persistent multi-session chat history.
 //!
-//! Sessions are JSON files under `%APPDATA%/cdout/sessions/<id>.json`.
+//! Sessions are JSON files under the app data dir — `%APPDATA%/cdout/sessions`
+//! on Windows, `~/Library/Application Support/cdout/sessions` on macOS.
 //! One file per session keeps the format auditable (you can `cat` it),
 //! sidebar-friendly (scan dir, parse metadata), and survives crashes — the
 //! frontend debounces saves so the worst-case data loss is the last ~500ms of
@@ -220,7 +221,7 @@ pub fn list_sessions() -> Result<Vec<SessionMeta>, String> {
         };
         out.push(meta);
     }
-    out.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.last_active_at));
     Ok(out)
 }
 

@@ -1,6 +1,7 @@
 mod constants;
 mod features;
 mod llm;
+mod platform;
 mod tools;
 mod utils;
 
@@ -31,6 +32,38 @@ fn get_explorer_status() -> Result<explorer::ExplorerState, String> {
 #[tauri::command]
 fn get_explorer_debug() -> Result<explorer::ExplorerDebugInfo, String> {
     explorer::get_explorer_debug_info().map_err(|e| e.to_string())
+}
+
+/// Everything the UI needs to describe the host OS: which file manager to
+/// name in labels, what the shell tool is called, how to render modifier keys.
+/// Sent once at startup rather than sniffed from the user agent, so the
+/// frontend and the system prompt can never disagree about the platform.
+#[derive(serde::Serialize)]
+struct PlatformInfo {
+    os: &'static str,
+    os_name: &'static str,
+    file_manager: &'static str,
+    shell_name: &'static str,
+    shell_tool_name: &'static str,
+    /// Prose telling the model how to read a written-out file list, already
+    /// substituted with `path` — the frontend pastes this into its
+    /// "files have changed" context updates.
+    read_list_hint: String,
+}
+
+#[tauri::command]
+fn get_platform_info(list_file_path: Option<String>) -> PlatformInfo {
+    PlatformInfo {
+        os: platform::OS_KEY,
+        os_name: platform::OS_NAME,
+        file_manager: platform::FILE_MANAGER,
+        shell_name: platform::SHELL.name,
+        shell_tool_name: platform::SHELL.tool_name,
+        read_list_hint: platform::with_list_file(
+            platform::SHELL.read_list_hint,
+            list_file_path.as_deref().unwrap_or("{LIST_FILE}"),
+        ),
+    }
 }
 
 /// Verified OpenRouter model slugs (mid-2026). Pinned list — `useModels`
@@ -496,20 +529,20 @@ fn cancel_stream() {
 }
 
 #[tauri::command]
-fn get_running_command() -> Option<tools::powershell::RunningCommand> {
-    tools::powershell::get_running()
+fn get_running_command() -> Option<tools::shell::RunningCommand> {
+    tools::shell::get_running()
 }
 
 #[tauri::command]
 fn kill_running_command() -> Result<(), String> {
-    tools::powershell::kill_running()
+    tools::shell::kill_running()
 }
 
 #[tauri::command]
-async fn execute_powershell(command: String, cwd: Option<String>) -> Result<String, String> {
+async fn execute_shell_command(command: String, cwd: Option<String>) -> Result<String, String> {
     let registry = tools::build_default_registry();
     let args = serde_json::json!({ "command": command });
-    let result = registry.validate_and_execute("run_powershell", &args, cwd.as_deref())?;
+    let result = registry.validate_and_execute(constants::TOOL_NAME, &args, cwd.as_deref())?;
     // Feed the outcome back to the loop detector so its no-progress signal works.
     loop_detector::record_outcome_global(!result.is_error);
     Ok(result.output)
@@ -628,6 +661,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_explorer_status,
             get_explorer_debug,
+            get_platform_info,
             get_ollama_models,
             get_provider_status,
             get_ollama_url,
@@ -654,7 +688,7 @@ pub fn run() {
             rename_session,
             list_skills,
             run_agent_step_stream,
-            execute_powershell,
+            execute_shell_command,
             reset_loop_detector,
             cancel_stream,
             get_running_command,
@@ -669,6 +703,10 @@ pub fn run() {
             // Only spotlight loses shadow (main keeps DWM border)
             spotlight_window.set_shadow(false).ok();
 
+            // A hotkey-triggered palette is useless if it opens on the Space
+            // the user left. No-op on Windows.
+            spotlight_window.set_visible_on_all_workspaces(true).ok();
+
             // --- System Tray ---
             let show_item = MenuItemBuilder::with_id("show", "Show cdout").build(app)?;
             let quit_item = MenuItemBuilder::with_id("quit", "Quit cdout").build(app)?;
@@ -678,11 +716,19 @@ pub fn run() {
                 .item(&quit_item)
                 .build()?;
 
-            TrayIconBuilder::new()
+            #[allow(unused_mut)]
+            let mut tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().cloned().unwrap())
                 .tooltip("cdout")
-                .menu(&tray_menu)
-                .on_menu_event(
+                .menu(&tray_menu);
+            #[cfg(target_os = "macos")]
+            {
+                // Menu-bar icons must be template images, or the fixed-colour
+                // PNG stays dark on a dark menu bar.
+                tray = tray.icon_as_template(true);
+            }
+
+            tray.on_menu_event(
                     move |app_handle: &tauri::AppHandle, event| match event.id().as_ref() {
                         "show" => {
                             if let Some(w) = app_handle.get_webview_window("main") {
@@ -758,6 +804,20 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // macOS keeps a dock icon for an app whose windows are all
+            // hidden, and clicking it emits Reopen rather than re-running
+            // setup. Without this, close-to-tray makes the app look dead to
+            // anyone who reaches for the dock instead of the menu bar.
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Reopen { .. }) {
+                if let Some(w) = app_handle.get_webview_window("main") {
+                    show_window(&w);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
+        });
 }

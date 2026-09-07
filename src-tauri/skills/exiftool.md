@@ -21,5 +21,5 @@ You have **ExifTool** available for reading and writing metadata across stills, 
 ### Tips
 - Always use `-o output` or `-tagsFromFile` rather than in-place edits unless the user explicitly asks; ExifTool creates `*_original` backups by default but they should still be controlled.
 - Use `-G` to show tag groups (`EXIF`, `XMP`, `IPTC`) when diagnosing.
-- For batch ops, ExifTool itself accepts a directory: `exiftool -CreateDate dir/` is faster than a PowerShell loop.
+- For batch ops, ExifTool itself accepts a directory: `exiftool -CreateDate dir/` is faster than a shell loop.
 - ExifTool reads EXR (`OpenEXR:*` tags) and most VFX/color metadata that oiiotool exposes plus more.

@@ -1,8 +1,15 @@
 pub mod ask_user_question;
-pub mod powershell;
+pub mod shell;
 
 use crate::llm::{ToolDefinition, ToolFunction};
+use crate::platform;
 use serde_json::Value;
+
+/// Names a model may use for the shell tool other than the one we advertise.
+/// Both platform spellings are accepted everywhere: models have strong priors
+/// about `run_powershell`, and a session recorded on Windows may be resumed on
+/// a Mac (or vice versa) with the old name embedded in its history.
+pub const SHELL_TOOL_ALIASES: &[&str] = &["run_powershell", "run_shell"];
 
 /// Result from executing a tool.
 #[derive(Debug)]
@@ -49,6 +56,19 @@ impl ToolRegistry {
             .iter()
             .find(|t| t.name() == name)
             .map(|t| t.as_ref())
+            .or_else(|| self.get_by_alias(name))
+    }
+
+    /// Resolve a cross-platform spelling of the shell tool. Kept separate from
+    /// `get` so `definitions()` still advertises exactly one name to the LLM.
+    fn get_by_alias(&self, name: &str) -> Option<&dyn Tool> {
+        if !SHELL_TOOL_ALIASES.contains(&name) {
+            return None;
+        }
+        self.tools
+            .iter()
+            .find(|t| t.name() == platform::SHELL.tool_name)
+            .map(|t| t.as_ref())
     }
 
     /// Generate LLM-facing tool definitions for all registered tools.
@@ -85,7 +105,7 @@ impl ToolRegistry {
 /// Build the default registry with all built-in tools.
 pub fn build_default_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(powershell::PowerShellTool));
+    registry.register(Box::new(shell::ShellTool));
     registry.register(Box::new(ask_user_question::AskUserQuestionTool));
     registry
 }
@@ -95,10 +115,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// The advertised shell-tool name on the platform running the tests.
+    fn shell_tool() -> &'static str {
+        platform::SHELL.tool_name
+    }
+
     #[test]
     fn test_registry_lookup() {
         let registry = build_default_registry();
-        assert!(registry.get("run_powershell").is_some());
+        assert!(registry.get(shell_tool()).is_some());
         assert!(registry.get("nonexistent_tool").is_none());
     }
 
@@ -107,11 +132,16 @@ mod tests {
         let registry = build_default_registry();
         let defs = registry.definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
-        assert!(names.contains(&"run_powershell"));
+        assert!(names.contains(&shell_tool()));
         assert!(names.contains(&"ask_user_question"));
+        // Exactly one shell tool is advertised, whatever the aliases accept.
+        assert_eq!(
+            names.iter().filter(|n| SHELL_TOOL_ALIASES.contains(n)).count(),
+            1
+        );
         let ps = defs
             .iter()
-            .find(|d| d.function.name == "run_powershell")
+            .find(|d| d.function.name == shell_tool())
             .unwrap();
         assert_eq!(ps.r#type, "function");
         // Schema should have "command" as a required property
@@ -123,7 +153,7 @@ mod tests {
     #[test]
     fn test_tool_requires_approval() {
         let registry = build_default_registry();
-        let tool = registry.get("run_powershell").unwrap();
+        let tool = registry.get(shell_tool()).unwrap();
         assert!(tool.requires_approval());
     }
 
@@ -132,7 +162,7 @@ mod tests {
         let registry = build_default_registry();
         // Simple echo command — should succeed
         let args = json!({ "command": "echo hello" });
-        let result = registry.validate_and_execute("run_powershell", &args, None);
+        let result = registry.validate_and_execute(shell_tool(), &args, None);
         assert!(result.is_ok());
         let r = result.unwrap();
         assert!(r.output.contains("hello"));
@@ -143,7 +173,7 @@ mod tests {
     fn test_validate_and_execute_empty_command() {
         let registry = build_default_registry();
         let args = json!({ "command": "   " });
-        let result = registry.validate_and_execute("run_powershell", &args, None);
+        let result = registry.validate_and_execute(shell_tool(), &args, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("empty"));
     }
@@ -152,7 +182,7 @@ mod tests {
     fn test_validate_and_execute_missing_command() {
         let registry = build_default_registry();
         let args = json!({ "wrong_field": "test" });
-        let result = registry.validate_and_execute("run_powershell", &args, None);
+        let result = registry.validate_and_execute(shell_tool(), &args, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Missing"));
     }
@@ -170,20 +200,58 @@ mod tests {
     fn test_validate_and_execute_non_string_command() {
         let registry = build_default_registry();
         let args = json!({ "command": 42 });
-        let result = registry.validate_and_execute("run_powershell", &args, None);
+        let result = registry.validate_and_execute(shell_tool(), &args, None);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_powershell_tool_properties() {
-        let tool = powershell::PowerShellTool;
-        assert_eq!(tool.name(), "run_powershell");
+    fn test_shell_tool_properties() {
+        let tool = shell::ShellTool;
+        assert_eq!(tool.name(), platform::SHELL.tool_name);
         assert!(tool.requires_approval());
     }
 
     #[test]
-    fn test_powershell_execute_failing_command() {
-        let tool = powershell::PowerShellTool;
+    fn test_no_tool_definition_names_the_foreign_shell() {
+        // Tool names AND descriptions are prompt surface. A macOS build that
+        // tells the model "before proposing a PowerShell command" gets
+        // PowerShell back — this caught exactly that in ask_user_question.
+        let registry = build_default_registry();
+        let foreign: &[&str] = if cfg!(target_os = "windows") {
+            &["zsh", "POSIX", "run_shell"]
+        } else {
+            &["PowerShell", "powershell", "run_powershell"]
+        };
+        for def in registry.definitions() {
+            let haystack = format!(
+                "{} {} {}",
+                def.function.name, def.function.description, def.function.parameters
+            );
+            for needle in foreign {
+                assert!(
+                    !haystack.contains(needle),
+                    "tool '{}' leaked '{needle}' to the model",
+                    def.function.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_shell_tool_resolves_cross_platform_aliases() {
+        // A history entry written on the other OS must still dispatch.
+        let registry = build_default_registry();
+        for alias in SHELL_TOOL_ALIASES {
+            let tool = registry
+                .get(alias)
+                .unwrap_or_else(|| panic!("alias {alias} should resolve"));
+            assert_eq!(tool.name(), platform::SHELL.tool_name);
+        }
+    }
+
+    #[test]
+    fn test_shell_execute_failing_command() {
+        let tool = shell::ShellTool;
         let args = json!({ "command": "exit 1" });
         let result = tool.execute(&args, None);
         assert!(result.is_error);

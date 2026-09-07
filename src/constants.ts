@@ -11,9 +11,12 @@ export const FILE_LIST_THRESHOLD = 20;
 export const TOOL_OUTPUT_COLLAPSE_CHARS = 200;
 export const MESSAGE_COLLAPSE_CHARS = 500;
 
-// Tool names
+// Tool names. The shell tool is named per-platform by the backend
+// (`run_powershell` on Windows, `run_shell` on macOS) because the name is part
+// of the prompt the model reads; use `platform.shell_tool_name` from
+// `getPlatformInfo()` when synthesizing a tool call. Both spellings are
+// accepted by the backend registry.
 export const TOOLS = {
-  RUN_POWERSHELL: "run_powershell",
   ASK_USER_QUESTION: "ask_user_question",
 } as const;
 
@@ -36,6 +39,7 @@ export const COMPLETION_SHORT_MAX_LEN = 200;
 export const CMD = {
   GET_EXPLORER_STATUS: "get_explorer_status",
   GET_EXPLORER_DEBUG: "get_explorer_debug",
+  GET_PLATFORM_INFO: "get_platform_info",
   GET_OLLAMA_MODELS: "get_ollama_models",
   GET_PROVIDER_STATUS: "get_provider_status",
   GET_OLLAMA_URL: "get_ollama_url",
@@ -61,7 +65,7 @@ export const CMD = {
   DELETE_SESSION: "delete_session",
   RENAME_SESSION: "rename_session",
   RUN_AGENT_STEP_STREAM: "run_agent_step_stream",
-  EXECUTE_POWERSHELL: "execute_powershell",
+  EXECUTE_SHELL_COMMAND: "execute_shell_command",
   RESET_LOOP_DETECTOR: "reset_loop_detector",
   CANCEL_STREAM: "cancel_stream",
   GET_RUNNING_COMMAND: "get_running_command",

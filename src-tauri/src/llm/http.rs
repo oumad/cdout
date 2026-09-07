@@ -53,8 +53,9 @@ fn build_client() -> Client {
             // Log the specific reqwest error before we panic. Without this a
             // TLS-backend init failure surfaces as a bare "shared reqwest
             // client should build" message with no clue about the actual
-            // cause. Windows target uses hyper-tls (schannel) so this is
-            // theoretical, but easy hardening.
+            // cause. Both targets use hyper-tls (schannel on Windows,
+            // Secure Transport on macOS) so this is theoretical, but easy
+            // hardening.
             eprintln!(
                 "[llm::http] FATAL: could not build shared reqwest client: {e:?}"
             );
