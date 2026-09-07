@@ -1255,6 +1255,8 @@ function MainApp() {
         <SettingsPage
           ollamaUrl={tempOllamaUrl}
           onOllamaUrlChange={setTempOllamaUrl}
+          platform={platform}
+          onError={showError}
           openrouterKey={openrouterKey}
           anthropicKey={anthropicKey}
           onOpenrouterKeyChange={setOpenrouterKey}

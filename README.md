@@ -156,7 +156,8 @@ After first launch:
 | `components/QuestionApproval.tsx` | Radio/checkbox UI for `ask_user_question` with an "Other (free text)" fallback |
 | `components/ModelSelector.tsx` | Provider-grouped `<optgroup>` (`Local (Ollama)` / `Anthropic (direct · cached)` / `OpenRouter`) |
 | `components/MigrationBanner.tsx` | One-shot banner shown when legacy CLI/Antigravity/openai/gemini creds are detected. "Clean up legacy creds" button calls `cleanup_legacy_credentials` |
-| `components/SettingsPage.tsx` | OpenRouter + Anthropic key fields (masked previews, never plaintext to renderer state), Ollama URL, free-tier toggle, quarantined-skill viewer |
+| `components/SettingsPage.tsx` | OpenRouter + Anthropic key fields (masked previews, never plaintext to renderer state), Ollama URL, free-tier toggle, quarantined-skill viewer, Diagnostics tab |
+| `components/FileAccessDiagnostics.tsx` | Explains why file context is empty. Distinguishes "permission denied" from "no window open", and deep-links the macOS Automation pane |
 
 ### Data flow — one agent turn
 
@@ -301,6 +302,7 @@ over. See `config::migrate_legacy_data_dir`.
 | `get_explorer_status` | `ExplorerState` | Path + selected files of the active Explorer/Finder window |
 | `get_explorer_debug` | `ExplorerDebugInfo` | For diagnosing detection failures. Shape is per-OS; on macOS it reports whether Automation access was granted |
 | `get_platform_info` | `PlatformInfo` | OS key/name, file-manager name, shell name, shell tool name, file-list read hint |
+| `open_file_access_settings` | | macOS: deep-links System Settings → Privacy & Security → Automation. Errors on Windows, which has no grant to give |
 | `get_ollama_models` | `Vec<String>` | All available model slugs, prefixed by provider |
 | `get_ollama_url` / `set_ollama_url` | | |
 | `get_selected_model` / `set_selected_model` | | |
@@ -359,13 +361,14 @@ over. See `config::migrate_legacy_data_dir`.
   - `features/explorer/macos.rs` — AppleScript payload parsing (folder vs file paths, desktop selections, filenames containing newlines), TCC-denial recognition
   - `agent.rs` — tool-proposal extraction, AgentStepResult serialization shape, loop-verdict escalation
 
-- Frontend: **38 vitest tests** (`npm test`).
+- Frontend: **45 vitest tests** (`npm test`).
   - `agent.test.ts` — `isTaskComplete` patterns
   - `useError.test.ts` — show/clear/auto-dismiss timing
   - `useModels.test.ts` — model-list reconciliation + stale-slug swap
   - `QuestionApproval.test.tsx` — radio + multi-select + custom-answer paths
   - `ChatMessage.test.tsx` — synthetic vs real-user rendering distinction (the "cdout internal" badge)
   - `usePlatform.test.ts` — fallback before the backend answers, replacement after, and degradation when the IPC call fails
+  - `FileAccessDiagnostics.test.tsx` — denial vs no-window-open vs working, the deep-link action, and that Windows is never offered a permission fix
   - `ProviderSetup.test.tsx` — both onboarding paths including the remote-Ollama URL (save, trim, unchanged-URL no-op, error surfacing)
 
 Run both via `cargo test --lib && npm test` from project root. CI runs the
@@ -426,6 +429,41 @@ macOS builds are unsigned, so Gatekeeper blocks the first launch: right-click
 Signing and notarizing would need an Apple Developer ID in
 `APPLE_CERTIFICATE` / `APPLE_ID` CI secrets — `entitlements.plist` is already
 in place for it.
+
+---
+
+## Troubleshooting
+
+**macOS: the file count stays at 0 / no folder is shown.** Automation
+permission was denied. Settings → **Diagnostics** says so outright and
+deep-links the fix; or do it by hand under System Settings → Privacy &
+Security → Automation → cdout → Finder. The consent dialog appears only once,
+so a missed or denied prompt never comes back on its own.
+
+**macOS: "cdout is damaged and can't be opened" / "unidentified developer".**
+The build is unsigned. Right-click the app → **Open**, or
+`xattr -dr com.apple.quarantine /Applications/cdout.app`.
+
+**macOS: every skill shows as Missing.** The bundled skills need their CLI
+tools on PATH, and a `.app` launched from Finder inherits only
+`/usr/bin:/bin:/usr/sbin:/sbin`. cdout runs commands through a login shell and
+seeds the Homebrew prefixes to compensate, so this usually means the tool
+genuinely is not installed — check with `which ffmpeg` in a terminal.
+Settings → Skills lists exactly which binaries are missing.
+
+**The hotkey does nothing.** Another app has claimed it. Change it in
+Settings; an unparseable value is rejected at the write boundary, and a
+corrupt one on disk falls back to the built-in default rather than bricking
+startup.
+
+**A local model writes commands but never runs them.** It is not emitting
+native tool calls. cdout has text-extraction fallbacks, but they are a
+safety net — see the eval harness above to check a model properly before
+relying on it.
+
+**A command "succeeded" but the output file is wrong.** Exit 0 does not mean
+no errors; see the section above. If a tool wrote errors to stderr, the tool
+result now says so explicitly.
 
 ---
 
