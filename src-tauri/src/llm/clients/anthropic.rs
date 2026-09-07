@@ -36,11 +36,7 @@ fn add_cache_breakpoints_to_tool_results(messages: &mut [serde_json::Value], max
         }
     }
 
-    let to_stamp: Vec<(usize, usize)> = tool_result_indices
-        .into_iter()
-        .rev()
-        .take(max)
-        .collect();
+    let to_stamp: Vec<(usize, usize)> = tool_result_indices.into_iter().rev().take(max).collect();
 
     for (msg_idx, block_idx) in to_stamp {
         if let Some(content) = messages[msg_idx]
@@ -94,10 +90,7 @@ pub async fn chat_anthropic_stream(
                 // Convert tool_calls to tool_use blocks
                 if let Some(tool_calls) = &msg.tool_calls {
                     for (i, tc) in tool_calls.iter().enumerate() {
-                        let tool_id = tc
-                            .id
-                            .clone()
-                            .unwrap_or_else(|| format!("toolu_{}", i));
+                        let tool_id = tc.id.clone().unwrap_or_else(|| format!("toolu_{}", i));
                         content_blocks.push(json!({
                             "type": "tool_use",
                             "id": tool_id,
@@ -281,10 +274,8 @@ pub async fn chat_anthropic_stream(
                                 let block_type =
                                     block.get("type").and_then(|t| t.as_str()).unwrap_or("");
                                 if block_type == "tool_use" {
-                                    current_tool_id = block
-                                        .get("id")
-                                        .and_then(|v| v.as_str())
-                                        .map(String::from);
+                                    current_tool_id =
+                                        block.get("id").and_then(|v| v.as_str()).map(String::from);
                                     current_tool_name = block
                                         .get("name")
                                         .and_then(|v| v.as_str())
@@ -326,8 +317,7 @@ pub async fn chat_anthropic_stream(
                                 (current_tool_id.take(), current_tool_name.take())
                             {
                                 let arguments: serde_json::Value =
-                                    serde_json::from_str(&current_tool_input)
-                                        .unwrap_or(json!({}));
+                                    serde_json::from_str(&current_tool_input).unwrap_or(json!({}));
                                 tool_calls.push(ToolCall {
                                     id: Some(id),
                                     function: FunctionCall { name, arguments },

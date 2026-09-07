@@ -205,10 +205,7 @@ mod tests {
             classify("connection reset by peer"),
             ErrorClass::TransientRetryable
         );
-        assert_eq!(
-            classify("broken pipe"),
-            ErrorClass::TransientRetryable
-        );
+        assert_eq!(classify("broken pipe"), ErrorClass::TransientRetryable);
         assert_eq!(
             classify("operation timed out"),
             ErrorClass::TransientRetryable

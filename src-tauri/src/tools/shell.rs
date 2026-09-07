@@ -126,7 +126,6 @@ impl Tool for ShellTool {
     }
 }
 
-
 /// Cap a blob at `MAX_OUTPUT_LEN`, noting how much was hidden.
 fn truncate(mut text: String) -> String {
     if text.len() > MAX_OUTPUT_LEN {
@@ -150,8 +149,17 @@ fn truncate(mut text: String) -> String {
 /// deliberately narrow: a false positive costs context, and a tool that logs
 /// the word "warning" on every run would poison every result.
 const ERROR_MARKERS: &[&str] = &[
-    "error", "invalid", "corrupt", "failed", "cannot", "no such file",
-    "not permitted", "denied", "unsupported", "malformed", "truncated",
+    "error",
+    "invalid",
+    "corrupt",
+    "failed",
+    "cannot",
+    "no such file",
+    "not permitted",
+    "denied",
+    "unsupported",
+    "malformed",
+    "truncated",
 ];
 
 /// Pull just the error-shaped lines out of a successful command's stderr.

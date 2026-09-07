@@ -14,42 +14,18 @@ use std::path::{Path, PathBuf};
 /// the lowercased skill body. We stay with substring matching (no regex) to
 /// avoid pulling the regex crate and to keep the rules auditable at a glance.
 const SAFETY_RULES: &[(&str, &str)] = &[
-    (
-        "prompt_injection_override",
-        "ignore previous instructions",
-    ),
-    (
-        "prompt_injection_system_tag",
-        "<system>",
-    ),
-    (
-        "prompt_injection_role_swap",
-        "you are now",
-    ),
-    (
-        "secret_exfil_env",
-        "process.env",
-    ),
+    ("prompt_injection_override", "ignore previous instructions"),
+    ("prompt_injection_system_tag", "<system>"),
+    ("prompt_injection_role_swap", "you are now"),
+    ("secret_exfil_env", "process.env"),
     // We DELIBERATELY do NOT flag bare `curl ` / `wget ` here — they appear
     // in legitimate skill prose ("download via curl") and a substring rule
     // is too blunt. The `pipe_curl_to_shell` detector below catches the
     // dangerous shape; standalone download instructions get a pass.
-    (
-        "destructive_rm_rf",
-        "rm -rf /",
-    ),
-    (
-        "destructive_chmod_777",
-        "chmod 777",
-    ),
-    (
-        "destructive_format_drive",
-        "format c:",
-    ),
-    (
-        "destructive_dd_disk",
-        "dd if=/dev/zero",
-    ),
+    ("destructive_rm_rf", "rm -rf /"),
+    ("destructive_chmod_777", "chmod 777"),
+    ("destructive_format_drive", "format c:"),
+    ("destructive_dd_disk", "dd if=/dev/zero"),
 ];
 
 /// Additional check: "curl ... | sh" / "wget ... | sh" pipe-to-shell pattern.
@@ -137,8 +113,8 @@ fn parse_skill_file(path: &Path) -> Result<(SkillMetadata, String), String> {
     let yaml_str = &after_first[..end];
     let body = after_first[end + 4..].trim().to_string();
 
-    let metadata: SkillMetadata =
-        serde_yaml::from_str(yaml_str).map_err(|e| format!("YAML parse error in {:?}: {}", path, e))?;
+    let metadata: SkillMetadata = serde_yaml::from_str(yaml_str)
+        .map_err(|e| format!("YAML parse error in {:?}: {}", path, e))?;
 
     Ok((metadata, body))
 }
@@ -159,10 +135,7 @@ fn check_requirements(reqs: &SkillRequirements) -> (bool, Vec<String>) {
     if !reqs.any_bins.is_empty() {
         let any_found = reqs.any_bins.iter().any(|b| binary_exists(b));
         if !any_found {
-            missing.push(format!(
-                "one of [{}]",
-                reqs.any_bins.join(", ")
-            ));
+            missing.push(format!("one of [{}]", reqs.any_bins.join(", ")));
         }
     }
 
@@ -179,10 +152,7 @@ enum SkillTrust {
     User,
 }
 
-fn load_skills_from_dir(
-    dir: &Path,
-    trust: SkillTrust,
-) -> (Vec<Skill>, Vec<QuarantinedSkill>) {
+fn load_skills_from_dir(dir: &Path, trust: SkillTrust) -> (Vec<Skill>, Vec<QuarantinedSkill>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return (Vec::new(), Vec::new()),
@@ -290,10 +260,14 @@ pub fn get_skills_prompt_section(skills: &[Skill]) -> String {
     }
 
     let mut section = String::from("\n\n--- AVAILABLE TOOLS & SKILLS ---\n");
-    section.push_str("The following tools are installed on this system. Use them when relevant:\n\n");
+    section
+        .push_str("The following tools are installed on this system. Use them when relevant:\n\n");
 
     for skill in available {
-        section.push_str(&format!("## {} - {}\n", skill.metadata.name, skill.metadata.description));
+        section.push_str(&format!(
+            "## {} - {}\n",
+            skill.metadata.name, skill.metadata.description
+        ));
         section.push_str(&skill.body);
         section.push_str("\n\n");
     }

@@ -99,7 +99,6 @@ impl ToolRegistry {
         tool.validate_input(arguments)?;
         Ok(tool.execute(arguments, cwd))
     }
-
 }
 
 /// Build the default registry with all built-in tools.
@@ -136,7 +135,10 @@ mod tests {
         assert!(names.contains(&"ask_user_question"));
         // Exactly one shell tool is advertised, whatever the aliases accept.
         assert_eq!(
-            names.iter().filter(|n| SHELL_TOOL_ALIASES.contains(n)).count(),
+            names
+                .iter()
+                .filter(|n| SHELL_TOOL_ALIASES.contains(n))
+                .count(),
             1
         );
         let ps = defs
