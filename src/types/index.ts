@@ -3,6 +3,15 @@ export interface ExplorerState {
   selected_files: string[];
 }
 
+/// How much the agent may run without a click. Persisted in config; the
+/// backend owns the default (`read_only`).
+export type ApprovalMode = "ask" | "read_only" | "auto";
+
+/// Verdict from the backend's command classifier. `read_only` is the only
+/// value that permits unattended execution in `read_only` mode; `dangerous`
+/// always stops for approval, even in `auto`.
+export type CommandRisk = "read_only" | "mutating" | "dangerous";
+
 /// Diagnostic payload from `get_explorer_debug`. The backend returns a
 /// different shape per platform (Windows reports HWNDs and shell-window
 /// matching; macOS reports Finder state and whether Apple events are
@@ -123,6 +132,8 @@ export interface ApiKeysResponse {
 export interface SpotlightSubmitPayload {
   prompt: string;
   model: string;
+  /** Set when the user submitted with the modifier held. */
+  auto_approve?: boolean;
 }
 
 /**

@@ -1,4 +1,5 @@
 pub mod ask_user_question;
+pub mod risk;
 pub mod shell;
 
 use crate::llm::{ToolDefinition, ToolFunction};

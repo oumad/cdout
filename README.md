@@ -85,6 +85,9 @@ After first launch:
 - **One shell tool** — the single execution surface: `run_powershell` on
   Windows, `run_shell` (zsh) on macOS. Every proposed command is editable
   before approval. Output is fed back to the LLM for the next step.
+- **Approval that isn't all-or-nothing** — by default, commands that provably
+  cannot change anything (`ffprobe`, `ls`, `Test-Path`) run unattended, and
+  anything that writes still waits for you. See below.
 - **Ask-user tool** — when the request is ambiguous (rename pattern, output
   format, overwrite vs new file), the model can call `ask_user_question` and
   cdout renders a multiple-choice picker.
@@ -132,6 +135,7 @@ After first launch:
 | `platform.rs` | The only `cfg`-heavy file: shell invocation, process-group kill, binary detection, and the `ShellSpec` that feeds every shell-specific line of the system prompt |
 | `tools/mod.rs` | `Tool` trait, `ToolRegistry`, `validate_and_execute`, cross-platform shell-tool aliases |
 | `tools/shell.rs` | The shell exec tool (PowerShell / zsh). Tracks PID for kill, truncates output, and forwards error-shaped stderr even when the command exits 0 |
+| `tools/risk.rs` | Allowlist command classifier (`ReadOnly` / `Mutating` / `Dangerous`) behind the approval policy |
 | `tools/ask_user_question.rs` | The multi-choice clarification tool (validated client-side, never executed server-side) |
 | `utils/config.rs` | `AppConfig` + `ApiKeys` (`{openrouter, anthropic}`) persistence |
 | `utils/cancel.rs` | Global `OnceLock<AtomicBool>` cancel flag (single concurrent loop by design) |
@@ -188,6 +192,46 @@ clicks Enter ───spotlight_submit──▶ persists prompt + model
                                                                 runAgentStep (next turn)
                                                                 ...
 ```
+
+---
+
+## Approval policy
+
+Approving every step is friction; approving nothing is reckless. Three modes,
+in Settings → Approval:
+
+| Mode | Behaviour |
+|------|-----------|
+| Ask every time | Nothing runs without a click |
+| **Auto-run read-only** (default) | Provably read-only commands run unattended; anything that writes waits |
+| Auto-run everything | Executes whatever it proposes |
+
+`tools/risk.rs` does the classification, and it is an **allowlist**: a command
+is read-only only if every segment of it names a known read-only tool, with no
+surviving redirection, no backticks, and command substitution only when the
+substituted command is itself read-only. Anything unrecognised — including
+loops and subshells, even when their body is a probe — counts as mutating.
+A gap in the list therefore costs an extra approval prompt, never an unwanted
+execution.
+
+Measured against the commands a local 27B actually produced during
+evaluation, 6 of 10 auto-ran and **every** `ffmpeg` write required approval.
+
+Two things are not configurable:
+
+- **Recognisably destructive commands always stop for approval** — `rm -rf /`,
+  `sudo`, `mkfs`, `dd if=`, `csrutil disable` and friends — even in
+  "auto-run everything". The approval card marks them in red.
+- Loop detection, the consecutive-failure pause and the step cap apply in
+  every mode.
+
+For a single task, `Cmd+Enter` (`Ctrl+Enter` on Windows) in the spotlight runs
+it unattended without changing the setting — so you never have to wait for the
+first proposal just to click **All**. While a run is pre-authorised the
+toolbar shows an **Auto** badge that clicks back to manual.
+
+Classification lives in the backend next to the tool that executes the
+command: a renderer-side allowlist would be one XSS away from advisory.
 
 ---
 
@@ -302,6 +346,8 @@ over. See `config::migrate_legacy_data_dir`.
 | `get_explorer_status` | `ExplorerState` | Path + selected files of the active Explorer/Finder window |
 | `get_explorer_debug` | `ExplorerDebugInfo` | For diagnosing detection failures. Shape is per-OS; on macOS it reports whether Automation access was granted |
 | `get_platform_info` | `PlatformInfo` | OS key/name, file-manager name, shell name, shell tool name, file-list read hint |
+| `get_approval_mode` / `set_approval_mode` | `ApprovalMode` | `ask` / `read_only` / `auto`, persisted. Written immediately on change, not on Settings-Save |
+| `classify_command` | `CommandRisk` | `read_only` / `mutating` / `dangerous` for one command |
 | `open_file_access_settings` | | macOS: deep-links System Settings → Privacy & Security → Automation. Errors on Windows, which has no grant to give |
 | `get_ollama_models` | `Vec<String>` | All available model slugs, prefixed by provider |
 | `get_ollama_url` / `set_ollama_url` | | |
@@ -323,7 +369,7 @@ over. See `config::migrate_legacy_data_dir`.
 | `reset_loop_detector` | | Called on "New chat" and on spotlight resubmit |
 | `cancel_stream` / `get_running_command` / `kill_running_command` | | Cancellation, process tracking, kill |
 | `write_file_list` | `String` | Spills large file lists to a temp file the LLM can read (`Get-Content` / `read -r`) |
-| `spotlight_submit` | | Spotlight → main window handshake |
+| `spotlight_submit` | | Spotlight → main window handshake. Carries `autoApprove` when submitted with the modifier held |
 
 ---
 
@@ -342,7 +388,7 @@ over. See `config::migrate_legacy_data_dir`.
 
 ## Testing
 
-- Backend: **161 unit tests** at last count (`cargo test --lib`), run on both
+- Backend: **179 unit tests** at last count (`cargo test --lib`), run on both
   platforms — the suite is parameterised on `platform::SHELL`, not hardcoded
   to PowerShell.
   - `retry.rs` — every classifier boundary + the cross-bucket guards
@@ -358,10 +404,11 @@ over. See `config::migrate_legacy_data_dir`.
     fresh-install no-op)
   - `tools/*.rs` — registry lookup, cross-platform tool-name aliasing, a guard that no tool definition names the other platform's shell, `ask_user_question` validation, shell exec + failure exit codes, and the exit-0-with-errors stderr filter (including its char-boundary safety)
   - `platform.rs` — `{LIST_FILE}` template substitution, binary detection against the real PATH, tool-name/shell agreement
+  - `risk.rs` — the allowlist policy from both directions: probes and read-only pipelines pass, writers/loops/unknown commands/backticks/redirection do not, substitution is judged recursively, and destructive patterns outrank a harmless-looking prefix
   - `features/explorer/macos.rs` — AppleScript payload parsing (folder vs file paths, desktop selections, filenames containing newlines), TCC-denial recognition
   - `agent.rs` — tool-proposal extraction, AgentStepResult serialization shape, loop-verdict escalation
 
-- Frontend: **45 vitest tests** (`npm test`).
+- Frontend: **51 vitest tests** (`npm test`).
   - `agent.test.ts` — `isTaskComplete` patterns
   - `useError.test.ts` — show/clear/auto-dismiss timing
   - `useModels.test.ts` — model-list reconciliation + stale-slug swap
@@ -369,6 +416,7 @@ over. See `config::migrate_legacy_data_dir`.
   - `ChatMessage.test.tsx` — synthetic vs real-user rendering distinction (the "cdout internal" badge)
   - `usePlatform.test.ts` — fallback before the backend answers, replacement after, and degradation when the IPC call fails
   - `FileAccessDiagnostics.test.tsx` — denial vs no-window-open vs working, the deep-link action, and that Windows is never offered a permission fix
+  - `CommandApproval.test.tsx` — the destructive/writes/read-only badges, and that approve-once vs approve-all still differ
   - `ProviderSetup.test.tsx` — both onboarding paths including the remote-Ollama URL (save, trim, unchanged-URL no-op, error surfacing)
 
 Run both via `cargo test --lib && npm test` from project root. CI runs the

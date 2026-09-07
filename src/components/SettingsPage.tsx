@@ -7,11 +7,17 @@ import {
   XCircle,
   ExternalLink,
   Stethoscope,
+  ShieldCheck,
 } from "lucide-react";
-import type { Skill, QuarantinedSkill, PlatformInfo } from "../types";
+import type {
+  Skill,
+  QuarantinedSkill,
+  PlatformInfo,
+  ApprovalMode,
+} from "../types";
 import { FileAccessDiagnostics } from "./FileAccessDiagnostics";
 
-type SettingsCategory = "providers" | "skills" | "diagnostics";
+type SettingsCategory = "providers" | "approval" | "skills" | "diagnostics";
 
 interface SettingsPageProps {
   // Local
@@ -33,6 +39,10 @@ interface SettingsPageProps {
   skills: Skill[];
   quarantinedSkills: QuarantinedSkill[];
 
+  // Approval policy
+  approvalMode: ApprovalMode;
+  onApprovalModeChange: (mode: ApprovalMode) => void;
+
   // Diagnostics
   platform: PlatformInfo;
   onError?: (msg: string) => void;
@@ -48,6 +58,7 @@ const CATEGORIES: {
   icon: typeof KeyRound;
 }[] = [
   { id: "providers", label: "Providers", icon: KeyRound },
+  { id: "approval", label: "Approval", icon: ShieldCheck },
   { id: "skills", label: "Skills", icon: Sparkles },
   { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
 ];
@@ -109,6 +120,13 @@ export function SettingsPage(props: SettingsPageProps) {
       <section className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="max-w-3xl mx-auto px-10 py-8">
           {active === "providers" && <ProvidersCategory {...props} />}
+          {active === "approval" && (
+            <ApprovalCategory
+              mode={props.approvalMode}
+              onChange={props.onApprovalModeChange}
+              platform={props.platform}
+            />
+          )}
           {active === "skills" && (
             <SkillsSection
               skills={props.skills}
@@ -319,6 +337,107 @@ function Field({
       {children}
       {hint && <p className="text-xs text-gray-500 mt-1.5">{hint}</p>}
     </div>
+  );
+}
+
+const APPROVAL_OPTIONS: {
+  id: ApprovalMode;
+  label: string;
+  detail: string;
+  tone: "safe" | "default" | "risk";
+}[] = [
+  {
+    id: "ask",
+    label: "Ask every time",
+    detail:
+      "Nothing runs until you approve it. The most cautious setting, and the most clicks.",
+    tone: "safe",
+  },
+  {
+    id: "read_only",
+    label: "Auto-run read-only commands",
+    detail:
+      "Probes that cannot change anything — reading a file's metadata, listing a folder, testing whether a path exists — run straight away. Anything that writes, moves or deletes still waits for you. A command the classifier does not recognise counts as writing, so the worst case is an extra prompt.",
+    tone: "default",
+  },
+  {
+    id: "auto",
+    label: "Auto-run everything",
+    detail:
+      "The agent executes whatever it proposes, including commands that overwrite or delete files. Loop detection, the consecutive-failure pause and the step cap still apply, and recognisably destructive commands (rm -rf /, sudo, disk formatting) always stop for approval.",
+    tone: "risk",
+  },
+];
+
+function ApprovalCategory({
+  mode,
+  onChange,
+  platform,
+}: {
+  mode: ApprovalMode;
+  onChange: (mode: ApprovalMode) => void;
+  platform: PlatformInfo;
+}) {
+  const modKey = platform.os === "macos" ? "\u2318" : "Ctrl";
+  return (
+    <>
+      <SectionHeader
+        title="Approval"
+        description="How much cdout may run without asking. Every command is still shown and editable before it runs when approval is required."
+      />
+      <div className="space-y-2.5">
+        {APPROVAL_OPTIONS.map((opt) => {
+          const active = mode === opt.id;
+          return (
+            <button
+              key={opt.id}
+              onClick={() => onChange(opt.id)}
+              className={`w-full text-left px-4 py-3 rounded-md border transition ${
+                active
+                  ? opt.tone === "risk"
+                    ? "bg-red-900/20 border-red-500/40"
+                    : "bg-indigo-600/15 border-indigo-500/40"
+                  : "bg-gray-800/40 border-gray-700/50 hover:border-gray-600"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-3.5 h-3.5 rounded-full border flex-none ${
+                    active
+                      ? opt.tone === "risk"
+                        ? "bg-red-500 border-red-400"
+                        : "bg-indigo-500 border-indigo-400"
+                      : "border-gray-600"
+                  }`}
+                />
+                <span
+                  className={`text-sm font-medium ${
+                    active ? "text-gray-100" : "text-gray-300"
+                  }`}
+                >
+                  {opt.label}
+                </span>
+                {opt.id === "read_only" && (
+                  <span className="text-[10px] uppercase tracking-wider text-gray-500">
+                    default
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-gray-400 leading-relaxed mt-1.5 pl-[22px]">
+                {opt.detail}
+              </p>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-xs text-gray-500 leading-relaxed mt-6">
+        Per-task override: press{" "}
+        <code className="text-gray-300">{modKey}+Enter</code> in the spotlight
+        to run one task unattended without changing this setting — that way you
+        do not have to wait for the first proposal just to click{" "}
+        <strong>All</strong>.
+      </p>
+    </>
   );
 }
 

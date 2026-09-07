@@ -20,6 +20,26 @@ const CONFIG_FILE_NAME: &str = "cdout_config.json";
 pub const LEGACY_APP_DATA_DIR_NAME: &str = "shuttle-io";
 const LEGACY_CONFIG_FILE_NAME: &str = "shuttle_config.json";
 
+/// How much the agent may run without a click.
+///
+/// The default is [`ApprovalMode::ReadOnly`] rather than `Ask` because the
+/// classifier behind it is an allowlist: a command it does not recognise is
+/// treated as mutating, so a gap costs an extra prompt rather than an
+/// unwanted execution. Most agent turns are probes (`ffprobe`, `ls`,
+/// `Test-Path`), and clicking Approve on those is pure friction.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    /// Approve every command by hand.
+    Ask,
+    /// Run provably read-only commands unattended; ask for anything else.
+    #[default]
+    ReadOnly,
+    /// Run everything unattended. Recognisably destructive commands still
+    /// stop for approval — that guard is not user-disableable.
+    Auto,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct AppConfig {
     #[serde(default = "default_ollama_url")]
@@ -37,6 +57,8 @@ pub struct AppConfig {
     /// openrouter.ai. Toggled by the one-shot migration banner.
     #[serde(default)]
     pub openrouter_disclosure_ack: bool,
+    #[serde(default)]
+    pub approval_mode: ApprovalMode,
 }
 
 fn default_ollama_url() -> String {
@@ -166,8 +188,19 @@ impl AppConfig {
             selected_model: None,
             show_free_openrouter_models: false,
             openrouter_disclosure_ack: false,
+            approval_mode: ApprovalMode::default(),
         }
     }
+}
+
+pub fn get_approval_mode() -> ApprovalMode {
+    load_config().approval_mode
+}
+
+pub fn set_approval_mode(mode: ApprovalMode) -> Result<(), String> {
+    let mut config = load_config();
+    config.approval_mode = mode;
+    save_config(&config)
 }
 
 fn save_config(config: &AppConfig) -> Result<(), String> {
@@ -375,6 +408,36 @@ mod tests {
         assert!(new.join("sessions").join("s1.json").is_file());
         assert!(!old.join("sessions").join("s1.json").exists());
         fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn default_approval_mode_is_read_only() {
+        // Deliberate: the classifier is an allowlist, so its failure mode is
+        // an extra prompt rather than an unwanted execution. Flipping this to
+        // Auto would make a fresh install run model-written commands
+        // unattended on first launch.
+        assert_eq!(
+            AppConfig::default_seed().approval_mode,
+            ApprovalMode::ReadOnly
+        );
+        assert_eq!(ApprovalMode::default(), ApprovalMode::ReadOnly);
+    }
+
+    #[test]
+    fn approval_mode_survives_a_roundtrip_and_older_configs() {
+        // A config written before this field existed must still load.
+        let legacy = r#"{"ollama_url":"http://x","hotkey":"Ctrl+Alt+A"}"#;
+        let cfg: AppConfig = serde_json::from_str(legacy).unwrap();
+        assert_eq!(cfg.approval_mode, ApprovalMode::ReadOnly);
+
+        let json = serde_json::to_string(&AppConfig {
+            approval_mode: ApprovalMode::Auto,
+            ..AppConfig::default_seed()
+        })
+        .unwrap();
+        assert!(json.contains("\"approval_mode\":\"auto\""));
+        let back: AppConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.approval_mode, ApprovalMode::Auto);
     }
 
     #[test]

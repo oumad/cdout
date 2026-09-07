@@ -12,6 +12,8 @@ import type {
   SessionMeta,
   PlatformInfo,
   ExplorerDebugInfo,
+  ApprovalMode,
+  CommandRisk,
 } from "../types";
 
 // Explorer
@@ -21,6 +23,20 @@ export function getExplorerStatus(): Promise<ExplorerState> {
 
 export function getExplorerDebug(): Promise<ExplorerDebugInfo> {
   return invoke<ExplorerDebugInfo>(CMD.GET_EXPLORER_DEBUG);
+}
+
+// Approval policy
+export function getApprovalMode(): Promise<ApprovalMode> {
+  return invoke<ApprovalMode>(CMD.GET_APPROVAL_MODE);
+}
+
+export function setApprovalMode(mode: ApprovalMode): Promise<void> {
+  return invoke(CMD.SET_APPROVAL_MODE, { mode });
+}
+
+/** Classified in the backend, beside the tool that runs the command. */
+export function classifyCommand(command: string): Promise<CommandRisk> {
+  return invoke<CommandRisk>(CMD.CLASSIFY_COMMAND, { command });
 }
 
 /** Opens the OS pane for granting file-manager access (macOS only). */
@@ -217,7 +233,9 @@ export function listSkills(): Promise<ListSkillsResult> {
 
 export function spotlightSubmit(
   prompt: string,
-  model: string
+  model: string,
+  /** Run the whole task unattended, without waiting for a first proposal. */
+  autoApprove = false
 ): Promise<void> {
-  return invoke(CMD.SPOTLIGHT_SUBMIT, { prompt, model });
+  return invoke(CMD.SPOTLIGHT_SUBMIT, { prompt, model, autoApprove });
 }

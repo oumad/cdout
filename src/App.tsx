@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Settings,
   X,
+  Zap,
 } from "lucide-react";
 import "./App.css";
 import type {
@@ -23,6 +24,8 @@ import type {
   QuarantinedSkill,
   PendingQuestion,
   ToolProposal,
+  ApprovalMode,
+  CommandRisk,
 } from "./types";
 import {
   BLUR_GRACE_MS,
@@ -108,7 +111,7 @@ function SpotlightApp() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  async function submit() {
+  async function submit(autoApprove = false) {
     if (!agentPrompt.trim()) return;
     if (!modelName) {
       // No usable model yet — sending would fail in the router. Point the user
@@ -119,7 +122,7 @@ function SpotlightApp() {
       return;
     }
     try {
-      await api.spotlightSubmit(agentPrompt, modelName);
+      await api.spotlightSubmit(agentPrompt, modelName, autoApprove);
       setAgentPrompt("");
     } catch (e) {
       showError(String(e));
@@ -140,7 +143,12 @@ function SpotlightApp() {
             placeholder="What would you like to do?"
             value={agentPrompt}
             onChange={(e) => setAgentPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              // Cmd/Ctrl+Enter pre-authorises the whole task, so the user
+              // never has to wait for a first proposal just to click "All".
+              submit(e.metaKey || e.ctrlKey);
+            }}
             autoFocus
           />
           <div className="flex flex-col items-center gap-1 text-xs text-gray-500">
@@ -170,6 +178,13 @@ function SpotlightApp() {
                 )}
               </div>
             )}
+            <span className="text-gray-600">
+              <kbd className="font-mono">Enter</kbd> to run ·{" "}
+              <kbd className="font-mono">
+                {platform.os === "macos" ? "\u2318" : "Ctrl"}+Enter
+              </kbd>{" "}
+              to run without approving each step
+            </span>
             {!spotlightPath && (
               // Otherwise an empty context area reads as "nothing selected"
               // when it can equally mean "no window open" or, on macOS, that
@@ -287,6 +302,15 @@ function MainApp() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
   const [autoExecute, setAutoExecute] = useState(false);
+  // Persisted policy (default: run read-only commands unattended). Distinct
+  // from `autoExecute`, which is this run's opt-in from "All" or a
+  // modifier-submit and resets between tasks.
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("read_only");
+  const approvalModeRef = useRef(approvalMode);
+  approvalModeRef.current = approvalMode;
+  // Risk of the surfaced proposal, so the approval card can say why it
+  // stopped.
+  const [pendingRisk, setPendingRisk] = useState<CommandRisk | null>(null);
   const autoExecuteRef = useRef(autoExecute);
   autoExecuteRef.current = autoExecute;
   const stopRequested = useRef(false);
@@ -375,6 +399,7 @@ function MainApp() {
         const url = await api.getOllamaUrl();
         setOllamaUrl(url);
         setTempOllamaUrl(url);
+        setApprovalMode(await api.getApprovalMode());
       } catch (err) {
         console.error("Failed to load Ollama URL:", err);
       }
@@ -430,6 +455,7 @@ function MainApp() {
     }
     setStreamingText("");
     setPendingCommand(null);
+    setPendingRisk(null);
     setPendingQuestion(null);
     pendingCommandToolId.current = undefined;
     setIsProcessing(false);
@@ -447,7 +473,7 @@ function MainApp() {
   // clean state BEFORE the new session is loaded.
   useEffect(() => {
     const unlisten = listen<SpotlightSubmitPayload>(EVENTS.SPOTLIGHT_SUBMITTED, async (event) => {
-      const { prompt, model } = event.payload;
+      const { prompt, model, auto_approve } = event.payload;
       setIsSettingsOpen(false);
       try {
         // 1) Cancel any in-flight stream + clear all UI state.
@@ -474,7 +500,14 @@ function MainApp() {
         setChatHistory(session.messages);
         // 5) Kick off the first agent step.
         setIsProcessing(true);
-        await runAgentStep(session.messages, autoExecuteRef.current, model);
+        // Pre-authorised from the spotlight: no waiting for a first proposal
+        // just to click "All".
+        if (auto_approve) setAutoExecute(true);
+        await runAgentStep(
+          session.messages,
+          auto_approve || autoExecuteRef.current,
+          model
+        );
       } catch (e) {
         showError(String(e));
         setIsProcessing(false);
@@ -751,7 +784,23 @@ function MainApp() {
           return;
         }
 
-        if (shouldAutoExecute && autoStepCount.current < MAX_AUTO_STEPS) {
+        // Three ways a command may run without a click, in order of scope:
+        //   1. this run was pre-authorised ("All", or a modifier-submit)
+        //   2. the persisted policy is "auto"
+        //   3. the policy is "read_only" AND the backend proved this command
+        //      cannot write anything
+        // A `dangerous` verdict overrides all three: recognisably destructive
+        // commands are never run unattended, and that is not configurable.
+        const risk = await api.classifyCommand(cmd).catch(
+          // A classifier failure must not become a free pass.
+          () => "mutating" as CommandRisk
+        );
+        const mode = approvalModeRef.current;
+        const permitted =
+          shouldAutoExecute || mode === "auto" || (mode === "read_only" && risk === "read_only");
+        const mayRunUnattended = permitted && risk !== "dangerous";
+
+        if (mayRunUnattended && autoStepCount.current < MAX_AUTO_STEPS) {
           setIsExecuting(true);
           setIsProcessing(false);
           try {
@@ -789,7 +838,10 @@ function MainApp() {
             }
 
             setIsProcessing(true);
-            await runAgentStep(newHistory, true, modelOverride);
+            // Pass the *session* flag through, not `true`: a read-only
+            // auto-run inside a manual session must leave the next command
+            // to be judged on its own risk.
+            await runAgentStep(newHistory, shouldAutoExecute, modelOverride);
           } catch (e) {
             console.error(`Auto-execute failed: ${e}`);
             setIsExecuting(false);
@@ -798,6 +850,7 @@ function MainApp() {
           }
         } else {
           if (shouldAutoExecute) setAutoExecute(false);
+          setPendingRisk(risk);
           setPendingCommand(cmd);
         }
         return;
@@ -825,7 +878,7 @@ function MainApp() {
               {
                 role: "user",
                 content:
-                  "If the task is complete, reply with exactly 'Task Complete' and stop. Otherwise, continue ONLY if there is genuinely more work to do — do not re-run, re-verify, or rephrase steps that already produced the expected output. CRITICAL: if you claimed to create files, you MUST verify each one exists with Test-Path BEFORE declaring Task Complete.",
+                  `If the task is complete, reply with exactly 'Task Complete' and stop. Otherwise, continue ONLY if there is genuinely more work to do — do not re-run, re-verify, or rephrase steps that already produced the expected output. CRITICAL: if you claimed to create files, you MUST verify each one exists BEFORE declaring Task Complete.`,
                 synthetic: true,
               },
             ];
@@ -1257,6 +1310,18 @@ function MainApp() {
           onOllamaUrlChange={setTempOllamaUrl}
           platform={platform}
           onError={showError}
+          approvalMode={approvalMode}
+          onApprovalModeChange={async (mode) => {
+            // Persist immediately rather than on Save: an approval policy
+            // that silently reverts because the user closed the panel is a
+            // security surprise.
+            setApprovalMode(mode);
+            try {
+              await api.setApprovalMode(mode);
+            } catch (e) {
+              showError(String(e));
+            }
+          }}
           openrouterKey={openrouterKey}
           anthropicKey={anthropicKey}
           onOpenrouterKeyChange={setOpenrouterKey}
@@ -1284,6 +1349,19 @@ function MainApp() {
       <div className="flex-none h-10 bg-gray-900/50 border-b border-gray-800 flex items-center px-3 gap-2">
         {/* Left: Sync + Context */}
         <div className="flex items-center gap-1.5">
+          {autoExecute && (
+            // A pre-authorised run has to be visible and revocable. Without
+            // this, a Cmd+Enter submit leaves the app executing unattended
+            // with nothing on screen saying so.
+            <button
+              onClick={() => setAutoExecute(false)}
+              title="Running unattended — click to require approval again"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 transition"
+            >
+              <Zap size={13} />
+              <span>Auto</span>
+            </button>
+          )}
           <div
             className="relative"
             onMouseEnter={() => setShowSyncTooltip(true)}
@@ -1541,6 +1619,7 @@ function MainApp() {
       {pendingCommand && (
         <CommandApproval
           command={pendingCommand}
+          risk={pendingRisk}
           onChange={setPendingCommand}
           onApprove={approveCommand}
           onReject={rejectCommand}

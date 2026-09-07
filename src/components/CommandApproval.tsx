@@ -1,8 +1,16 @@
 import { useState } from "react";
-import { Terminal, Play, Info, X, Loader2 } from "lucide-react";
+import { Terminal, Play, Info, X, Loader2, ShieldAlert, Pencil } from "lucide-react";
+import type { CommandRisk } from "../types";
 
 interface CommandApprovalProps {
   command: string;
+  /**
+   * Why this proposal stopped for approval. `null` when unclassified.
+   * `read_only` here means the policy is "ask for everything" — the command
+   * itself is harmless, which is worth saying so the user can approve it
+   * without reading it closely.
+   */
+  risk?: CommandRisk | null;
   onChange: (command: string) => void;
   onApprove: (continueAuto: boolean) => void;
   onReject: (feedback: string) => void;
@@ -13,6 +21,7 @@ interface CommandApprovalProps {
 
 export function CommandApproval({
   command,
+  risk,
   onChange,
   onApprove,
   onReject,
@@ -27,12 +36,27 @@ export function CommandApproval({
 
   return (
     <div className="flex-none p-3 pt-0">
-      <div className="bg-black/40 border border-emerald-500/30 rounded-lg overflow-hidden">
-        <div className="bg-emerald-500/10 px-3 py-1.5 flex items-center justify-between border-b border-emerald-500/20">
-          <div className="flex items-center gap-2 text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+      <div
+        className={`bg-black/40 border rounded-lg overflow-hidden ${
+          risk === "dangerous" ? "border-red-500/40" : "border-emerald-500/30"
+        }`}
+      >
+        <div
+          className={`px-3 py-1.5 flex items-center justify-between border-b ${
+            risk === "dangerous"
+              ? "bg-red-500/10 border-red-500/20"
+              : "bg-emerald-500/10 border-emerald-500/20"
+          }`}
+        >
+          <div
+            className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider ${
+              risk === "dangerous" ? "text-red-300" : "text-emerald-400"
+            }`}
+          >
             <Terminal size={12} />
             Command Proposal (editable)
           </div>
+          {risk && <RiskBadge risk={risk} />}
         </div>
         <div className="p-3">
           <textarea
@@ -110,5 +134,34 @@ export function CommandApproval({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Names the reason a proposal needs a look. The destructive case is the one
+ * that matters: it is shown even when the user has opted into running
+ * everything unattended, because that guard is not disableable.
+ */
+function RiskBadge({ risk }: { risk: CommandRisk }) {
+  if (risk === "dangerous") {
+    return (
+      <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-red-300">
+        <ShieldAlert size={11} />
+        Destructive — read it
+      </span>
+    );
+  }
+  if (risk === "mutating") {
+    return (
+      <span className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-amber-400/80">
+        <Pencil size={10} />
+        Writes files
+      </span>
+    );
+  }
+  return (
+    <span className="text-[10px] font-medium uppercase tracking-wider text-gray-500">
+      Read-only
+    </span>
   );
 }

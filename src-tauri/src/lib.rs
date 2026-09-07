@@ -34,6 +34,24 @@ fn get_explorer_debug() -> Result<explorer::ExplorerDebugInfo, String> {
     explorer::get_explorer_debug_info().map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_approval_mode() -> config::ApprovalMode {
+    config::get_approval_mode()
+}
+
+#[tauri::command]
+fn set_approval_mode(mode: config::ApprovalMode) -> Result<(), String> {
+    config::set_approval_mode(mode)
+}
+
+/// Classify a proposed command so the frontend can decide whether it may run
+/// without a click. Kept in the backend beside the tool that executes it —
+/// a renderer-side allowlist would be one XSS away from being advisory.
+#[tauri::command]
+fn classify_command(command: String) -> tools::risk::CommandRisk {
+    tools::risk::classify(&command)
+}
+
 /// Open the OS pane where the user grants cdout permission to inspect the
 /// file manager. On macOS a denied Apple-events prompt never reappears, so
 /// without a deep link the only fix is a five-click hunt through System
@@ -616,6 +634,9 @@ fn write_file_list(files: Vec<String>) -> Result<String, String> {
 fn spotlight_submit(
     prompt: String,
     model: String,
+    // `auto_approve` is true when the user submitted with the modifier held:
+    // run this whole task unattended without waiting for the first proposal.
+    auto_approve: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     if let Some(spotlight) = app_handle.get_webview_window("spotlight") {
@@ -629,7 +650,8 @@ fn spotlight_submit(
                 "spotlight-submitted",
                 serde_json::json!({
                     "prompt": prompt,
-                    "model": model
+                    "model": model,
+                    "auto_approve": auto_approve
                 }),
             )
             .ok();
@@ -693,6 +715,9 @@ pub fn run() {
             get_explorer_debug,
             get_platform_info,
             open_file_access_settings,
+            get_approval_mode,
+            set_approval_mode,
+            classify_command,
             get_ollama_models,
             get_provider_status,
             get_ollama_url,
