@@ -438,7 +438,7 @@ html.js .rev.in{opacity:1;transform:none}
   <h1>Talk to your files.<br><span class="grad">Approve the command.</span> Done.</h1>
   <p class="lede">
     Select files in Explorer or Finder, press a hotkey, and say what you want in plain English.
-    cdout writes the command — PowerShell on Windows, zsh on macOS — and never runs a line until you approve it.
+    cdout writes the command — PowerShell on Windows, zsh on macOS — and never changes a file until you approve it.
   </p>
   <div class="cta">
     <a class="btn btn-primary" href="https://github.com/oumad/cdout/releases/latest">
@@ -600,7 +600,7 @@ html.js .rev.in{opacity:1;transform:none}
     </div>
     <div class="step rev"><span class="thread"></span>
       <div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div>
-      <h3>Approve</h3><p>Read the exact command it proposes. Edit it, reject with feedback, or run it.</p>
+      <h3>Approve</h3><p>Read the exact command it proposes. Edit it, reject with feedback, or run it. Probes that only read run on their own — you are asked about the ones that write.</p>
     </div>
     <div class="step rev">
       <div class="si"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>
@@ -620,7 +620,11 @@ html.js .rev.in{opacity:1;transform:none}
     </div>
     <div class="card rev">
       <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg></div>
-      <h3>One tool: your shell</h3><p>Every action is a single, editable proposal — <code>run_powershell</code> on Windows, <code>run_shell</code> (zsh) on macOS. Approve, edit inline, or reject with a note the model reads back. Read-only probes run on their own; anything that writes waits for you.</p>
+      <h3>One tool: your shell</h3><p>Every action is a single, editable proposal — <code>run_powershell</code> on Windows, <code>run_shell</code> (zsh) on macOS. Approve, edit inline, or reject with a note the model reads back.</p>
+    </div>
+    <div class="card rev">
+      <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4-3 7.2-7 9-4-1.8-7-5-7-9V6Z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg></div>
+      <h3>Approval that isn't all-or-nothing</h3><p>Commands that <em>provably</em> cannot change anything — reading metadata, listing a folder, testing a path — run unattended. Anything that writes waits for you. The classifier is an allowlist, so a command it doesn't recognise counts as writing: the worst case is one extra click, never a surprise execution. <code>rm -rf /</code>, <code>sudo</code> and disk formatting always stop, in every mode.</p>
     </div>
     <div class="card rev">
       <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></div>
