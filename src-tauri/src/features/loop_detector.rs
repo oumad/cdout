@@ -200,7 +200,10 @@ impl LoopDetector {
     }
 
     fn escalate(&mut self, escalation_key: &str, reason: String) -> LoopVerdict {
-        let count = self.warning_seen.entry(escalation_key.to_string()).or_insert(0);
+        let count = self
+            .warning_seen
+            .entry(escalation_key.to_string())
+            .or_insert(0);
         *count += 1;
         match *count {
             1 => LoopVerdict::Warning(reason),
@@ -343,8 +346,10 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
 fn canonicalize_json(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
-            let mut entries: Vec<(String, Value)> =
-                map.iter().map(|(k, v)| (k.clone(), canonicalize_json(v))).collect();
+            let mut entries: Vec<(String, Value)> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), canonicalize_json(v)))
+                .collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             Value::Object(serde_json::Map::from_iter(entries))
         }
@@ -446,10 +451,7 @@ mod tests {
         // because no-progress requires N+1 calls before triggering... actually
         // since we just recorded the 4th, the detector sees 4 same-name failed
         // observations. With threshold=4 it triggers.
-        let v = d.record_proposal(
-            "run_powershell",
-            &json!({ "command": "attempt 5" }),
-        );
+        let v = d.record_proposal("run_powershell", &json!({ "command": "attempt 5" }));
         assert!(!v.is_ok(), "expected no-progress detection, got {:?}", v);
     }
 
@@ -471,8 +473,16 @@ mod tests {
         // Once no_progress triggers, escalations should reach Block and Break.
         let any_block = verdicts.iter().any(|v| matches!(v, LoopVerdict::Block(_)));
         let any_break = verdicts.iter().any(|v| matches!(v, LoopVerdict::Break(_)));
-        assert!(any_block, "no_progress should escalate to Block, got {:?}", verdicts);
-        assert!(any_break, "no_progress should escalate to Break, got {:?}", verdicts);
+        assert!(
+            any_block,
+            "no_progress should escalate to Block, got {:?}",
+            verdicts
+        );
+        assert!(
+            any_break,
+            "no_progress should escalate to Break, got {:?}",
+            verdicts
+        );
     }
 
     #[test]

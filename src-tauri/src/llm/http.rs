@@ -45,7 +45,11 @@ fn build_client() -> Client {
         .pool_idle_timeout(POOL_IDLE_TIMEOUT)
         .tcp_keepalive(TCP_KEEPALIVE)
         .connect_timeout(CONNECT_TIMEOUT)
-        .user_agent(concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!(
+            env!("CARGO_PKG_NAME"),
+            "/",
+            env!("CARGO_PKG_VERSION")
+        ))
         .build()
     {
         Ok(client) => client,
@@ -56,9 +60,7 @@ fn build_client() -> Client {
             // cause. Both targets use hyper-tls (schannel on Windows,
             // Secure Transport on macOS) so this is theoretical, but easy
             // hardening.
-            eprintln!(
-                "[llm::http] FATAL: could not build shared reqwest client: {e:?}"
-            );
+            eprintln!("[llm::http] FATAL: could not build shared reqwest client: {e:?}");
             panic!("shared reqwest client should build: {e}");
         }
     }

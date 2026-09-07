@@ -97,14 +97,13 @@ fn extract_tool_proposals(msg: &Message, registry: &ToolRegistry) -> Vec<ToolPro
 
         if call.function.name == ASK_USER_QUESTION_TOOL {
             // ask_user_question carries structured options instead of a command string.
-            let qd: QuestionData =
-                match serde_json::from_value(call.function.arguments.clone()) {
-                    Ok(q) => q,
-                    Err(e) => {
-                        eprintln!("Failed to parse ask_user_question arguments: {}", e);
-                        continue;
-                    }
-                };
+            let qd: QuestionData = match serde_json::from_value(call.function.arguments.clone()) {
+                Ok(q) => q,
+                Err(e) => {
+                    eprintln!("Failed to parse ask_user_question arguments: {}", e);
+                    continue;
+                }
+            };
             proposals.push(ToolProposal {
                 tool_name: call.function.name.clone(),
                 command: qd.question.clone(),
@@ -245,8 +244,7 @@ fn process_response(
         // multiple-choice payload and the frontend would render it as a
         // shell command. So any question (or multiple proposals) goes
         // through ToolProposals which preserves question_data.
-        let is_lone_shell_command =
-            proposals.len() == 1 && proposals[0].tool_name == TOOL_NAME;
+        let is_lone_shell_command = proposals.len() == 1 && proposals[0].tool_name == TOOL_NAME;
         let response = if is_lone_shell_command {
             AgentResponse::CommandProposal(proposals[0].command.clone())
         } else {
@@ -265,8 +263,8 @@ fn process_response(
     //    extraction from prose like "I successfully ran echo X."
     let content_lower = response_msg.content.to_lowercase();
     if !is_success_summary(&content_lower) {
-        if let Some(cmd) =
-            extract_code_block(&response_msg.content).or_else(|| extract_raw_tool_call(&response_msg.content))
+        if let Some(cmd) = extract_code_block(&response_msg.content)
+            .or_else(|| extract_raw_tool_call(&response_msg.content))
         {
             history.push(response_msg.clone());
             let synthetic = ToolProposal {
@@ -788,7 +786,10 @@ mod tests {
         let r = process_response(&msg, &registry, &mut history);
         match r.response {
             AgentResponse::Text(_) => {}
-            other => panic!("Expected Text, got {:?}", serde_json::to_value(&other).unwrap()),
+            other => panic!(
+                "Expected Text, got {:?}",
+                serde_json::to_value(&other).unwrap()
+            ),
         }
     }
 

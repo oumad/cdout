@@ -368,7 +368,9 @@ over. See `config::migrate_legacy_data_dir`.
   - `usePlatform.test.ts` — fallback before the backend answers, replacement after, and degradation when the IPC call fails
   - `ProviderSetup.test.tsx` — both onboarding paths including the remote-Ollama URL (save, trim, unchanged-URL no-op, error surfacing)
 
-Run both via `cargo test --lib && npm test` from project root.
+Run both via `cargo test --lib && npm test` from project root. CI runs the
+same two suites plus `cargo clippy -D warnings` and `cargo fmt --check` on
+Windows and macOS for every push and PR.
 
 ---
 

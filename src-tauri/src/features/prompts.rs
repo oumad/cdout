@@ -175,9 +175,7 @@ fn default_sections() -> Vec<Box<dyn PromptSection>> {
     ]
 }
 
-fn build_files_block(
-    selected_files: &[String],
-) -> Result<(String, String, String), String> {
+fn build_files_block(selected_files: &[String]) -> Result<(String, String, String), String> {
     let file_count = selected_files.len();
     if selected_files.is_empty() {
         return Ok((

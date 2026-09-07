@@ -39,7 +39,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
@@ -65,4 +65,8 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --lib --all-targets -- -D warnings
+        working-directory: ./src-tauri
+
+      - name: Formatting
+        run: cargo fmt --check
         working-directory: ./src-tauri

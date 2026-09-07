@@ -81,10 +81,8 @@ const OPENROUTER_PAID_MODELS: &[&str] = &[
 ];
 
 /// Optional free-tier slugs (FP4 quantization risk + 20 req/min cap).
-const OPENROUTER_FREE_MODELS: &[&str] = &[
-    "qwen/qwen3-coder-1m:free",
-    "google/gemini-2.5-flash-lite",
-];
+const OPENROUTER_FREE_MODELS: &[&str] =
+    &["qwen/qwen3-coder-1m:free", "google/gemini-2.5-flash-lite"];
 
 /// Direct Anthropic models — only surfaced when the user has an Anthropic
 /// API key configured. They keep the prompt-caching path that OpenRouter's
@@ -241,7 +239,14 @@ fn mask_key(key: &str) -> Option<String> {
     if key.len() <= 4 {
         return Some("****".to_string());
     }
-    let tail: String = key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     Some(format!("…{}", tail))
 }
 
@@ -728,32 +733,32 @@ pub fn run() {
                 tray = tray.icon_as_template(true);
             }
 
-            tray.on_menu_event(
-                    move |app_handle: &tauri::AppHandle, event| match event.id().as_ref() {
-                        "show" => {
-                            if let Some(w) = app_handle.get_webview_window("main") {
-                                show_window(&w);
-                            }
-                        }
-                        "quit" => {
-                            app_handle.exit(0);
-                        }
-                        _ => {}
-                    },
-                )
-                .on_tray_icon_event({
-                    let w = main_window.clone();
-                    move |_tray, event| {
-                        if let tauri::tray::TrayIconEvent::Click {
-                            button: tauri::tray::MouseButton::Left,
-                            ..
-                        } = event
-                        {
+            tray.on_menu_event(move |app_handle: &tauri::AppHandle, event| {
+                match event.id().as_ref() {
+                    "show" => {
+                        if let Some(w) = app_handle.get_webview_window("main") {
                             show_window(&w);
                         }
                     }
-                })
-                .build(app)?;
+                    "quit" => {
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                }
+            })
+            .on_tray_icon_event({
+                let w = main_window.clone();
+                move |_tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        ..
+                    } = event
+                    {
+                        show_window(&w);
+                    }
+                }
+            })
+            .build(app)?;
 
             // --- Global Hotkey ---
             // A corrupt/unsupported hotkey string in config must NOT brick
@@ -778,15 +783,15 @@ pub fn run() {
             // Unregister first in case a previous instance left it registered
             let _ = app.global_shortcut().unregister(shortcut);
 
-            if let Err(e) = app.global_shortcut().on_shortcut(
-                shortcut,
-                move |_app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
-                        center_on_cursor_monitor(&hotkey_spotlight);
-                        show_window(&hotkey_spotlight);
-                    }
-                },
-            ) {
+            if let Err(e) =
+                app.global_shortcut()
+                    .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                        if event.state == ShortcutState::Pressed {
+                            center_on_cursor_monitor(&hotkey_spotlight);
+                            show_window(&hotkey_spotlight);
+                        }
+                    })
+            {
                 eprintln!(
                     "Warning: Failed to register global hotkey '{}': {}",
                     hotkey_str, e

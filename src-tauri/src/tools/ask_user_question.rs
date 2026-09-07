@@ -97,8 +97,7 @@ impl Tool for AskUserQuestionTool {
         // user's selection as a tool_result message — execute is never called
         // server-side. If it is, surface a clear error so the bug is obvious.
         ToolResult {
-            output: "ask_user_question must be answered through the UI, not executed."
-                .to_string(),
+            output: "ask_user_question must be answered through the UI, not executed.".to_string(),
             is_error: true,
         }
     }
