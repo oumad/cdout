@@ -1,0 +1,68 @@
+name: CI
+
+# Runs the test suites on both supported platforms. The release workflow only
+# proves the app *builds*; this proves it works — and it is the only thing that
+# type-checks the Windows COM code and the macOS AppleScript code against each
+# other, since the platform split means half the backend is `cfg`-ed out on any
+# single machine.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: ${{ matrix.os }}-ci
+
+      # The Rust crate needs no webview toolchain to compile the lib target,
+      # but tauri-build still reads tauri.conf.json, so the frontend deps have
+      # to exist first.
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Backend tests
+        run: cargo test --lib
+        working-directory: ./src-tauri
+
+      - name: Clippy
+        run: cargo clippy --lib --all-targets -- -D warnings
+        working-directory: ./src-tauri
