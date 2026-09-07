@@ -272,6 +272,19 @@ pub fn run_shell(command: &str, cwd: Option<&str>) -> ToolResult {
 mod tests {
     use super::*;
 
+    /// A script that writes `err` to stderr and `out` to stdout, then exits
+    /// with `code` — spelled for whichever shell this platform runs. The
+    /// POSIX form (`echo x >&2`) is a parse error in PowerShell, so these
+    /// end-to-end tests silently only covered macOS until CI ran them on
+    /// Windows.
+    fn script(err: &str, out: &str, code: i32) -> String {
+        if cfg!(target_os = "windows") {
+            format!("[Console]::Error.WriteLine('{err}'); Write-Output '{out}'; exit {code}")
+        } else {
+            format!("echo '{err}' >&2; echo '{out}'; exit {code}")
+        }
+    }
+
     #[test]
     fn error_lines_ignores_routine_chatter() {
         // ffmpeg writes its banner, stream table and progress to stderr on a
@@ -330,7 +343,7 @@ mod tests {
     #[test]
     fn successful_command_forwards_error_stderr() {
         // End-to-end through the real shell: exit 0 while writing an error.
-        let r = run_shell("echo 'Invalid NAL unit size' >&2; echo done; exit 0", None);
+        let r = run_shell(&script("Invalid NAL unit size", "done", 0), None);
         assert!(!r.is_error, "exit 0 must still be a success");
         assert!(r.output.contains("done"));
         assert!(
@@ -343,7 +356,7 @@ mod tests {
 
     #[test]
     fn successful_command_hides_harmless_stderr() {
-        let r = run_shell("echo 'frame= 120 fps=30' >&2; echo ok; exit 0", None);
+        let r = run_shell(&script("frame= 120 fps=30", "ok", 0), None);
         assert!(!r.is_error);
         assert!(r.output.contains("ok"));
         assert!(
@@ -356,7 +369,7 @@ mod tests {
     #[test]
     fn failing_command_still_forwards_all_stderr() {
         // Unchanged behaviour on failure: the whole stderr, not just matches.
-        let r = run_shell("echo 'plain detail' >&2; exit 3", None);
+        let r = run_shell(&script("plain detail", "", 3), None);
         assert!(r.is_error);
         assert!(r.output.contains("[Exit code: 3 — Failed]"));
         assert!(r.output.contains("plain detail"));
