@@ -35,7 +35,7 @@ import {
   TOOLS,
 } from "./constants";
 import * as api from "./utils/tauri";
-import { useModels, useExplorer, useError, useSessions } from "./hooks";
+import { useModels, useExplorer, useError, useSessions, usePlatform } from "./hooks";
 import { isTaskComplete } from "./utils/agent";
 import {
   ErrorToast,
@@ -65,6 +65,7 @@ function App() {
 function SpotlightApp() {
   const { modelName, setModelName, availableModels, ollamaConnected, fetchModels } = useModels();
   const { explorerState, fetchExplorer } = useExplorer();
+  const platform = usePlatform();
   const { error, showError, clearError } = useError();
   const [agentPrompt, setAgentPrompt] = useState("");
   const [isRefreshingModels, setIsRefreshingModels] = useState(false);
@@ -169,6 +170,14 @@ function SpotlightApp() {
                 )}
               </div>
             )}
+            {!spotlightPath && (
+              // Otherwise an empty context area reads as "nothing selected"
+              // when it can equally mean "no window open" or, on macOS, that
+              // Automation access to Finder was never granted.
+              <span className="text-gray-600">
+                No {platform.file_manager} window detected
+              </span>
+            )}
             <div className="flex items-center gap-2 text-gray-600 max-w-full">
               <div className="flex items-center gap-1 min-w-0 max-w-[420px]">
                 <ModelSelector
@@ -221,6 +230,7 @@ function MainApp() {
     }
   );
   const { explorerState, setExplorerState } = useExplorer();
+  const platform = usePlatform();
   const [loading, setLoading] = useState(false);
 
   // Settings State
@@ -293,7 +303,7 @@ function MainApp() {
    */
   const runGeneration = useRef(0);
   /**
-   * tool_call_id of the currently-surfaced PowerShell proposal. Needed so
+   * tool_call_id of the currently-surfaced command proposal. Needed so
    * dismiss/reject can append a correlated tool_result and never leave an
    * orphaned assistant tool_use (which Anthropic rejects with HTTP 400).
    */
@@ -445,7 +455,7 @@ function MainApp() {
         await hardResetSessionUi();
         // 2) Switch model context for the new session.
         setModelName(model);
-        // 3) Fetch the current Explorer context.
+        // 3) Fetch the current file-manager context.
         const state = await api.getExplorerStatus();
         setExplorerState(state);
         lastSyncedContext.current = {
@@ -601,7 +611,10 @@ function MainApp() {
 
           if (explorerState.selected_files.length > FILE_LIST_THRESHOLD) {
             const fileListPath = await api.writeFileList(explorerState.selected_files);
-            contextUpdate = `[CONTEXT UPDATE - Files have changed]\n\nWorking directory: ${explorerState.path}\nSelected files: ${explorerState.selected_files.length} files (too many to list inline)\n\nThe complete file list has been written to: ${fileListPath}\n\nTo read the file list in PowerShell, use:\n$files = Get-Content '${fileListPath}'\n\nPlease use these updated files for any subsequent operations.`;
+            // The read hint is shell-specific, so ask the backend for it
+            // rather than hardcoding a PowerShell cmdlet here.
+            const { read_list_hint } = await api.getPlatformInfo(fileListPath);
+            contextUpdate = `[CONTEXT UPDATE - Files have changed]\n\nWorking directory: ${explorerState.path}\nSelected files: ${explorerState.selected_files.length} files (too many to list inline)\n\nThe complete file list has been written to: ${fileListPath}\n\n${read_list_hint}\n\nPlease use these updated files for any subsequent operations.`;
           } else {
             const filesList = explorerState.selected_files.length > 0
               ? explorerState.selected_files.map((f, i) => `${i + 1}. ${f}`).join('\n')
@@ -632,7 +645,7 @@ function MainApp() {
 
   // Pick which proposal to surface. ask_user_question always wins — if the model
   // is asking for clarification, that's a hard pause regardless of any sibling
-  // run_powershell proposals.
+  // shell-command proposals.
   function selectProposal(proposals: ToolProposal[]): ToolProposal | null {
     if (proposals.length === 0) return null;
     const question = proposals.find((p) => p.tool_name === TOOLS.ASK_USER_QUESTION);
@@ -685,7 +698,7 @@ function MainApp() {
         proposals = result.response.content as ToolProposal[];
       } else if (result.response.type === "CommandProposal") {
         proposals = [{
-          tool_name: TOOLS.RUN_POWERSHELL,
+          tool_name: platform.shell_tool_name,
           command: result.response.content as string,
         }];
       }
@@ -705,7 +718,7 @@ function MainApp() {
         return;
       }
 
-      // Branch 2: PowerShell command proposal.
+      // Branch 2: shell command proposal.
       if (proposal && proposal.command) {
         const cmd = proposal.command;
         // Remember the tool_call_id so dismiss/reject can answer the tool_use.
@@ -742,8 +755,8 @@ function MainApp() {
           setIsExecuting(true);
           setIsProcessing(false);
           try {
-            const output = await api.executePowershell(cmd, explorerState?.path || null);
-            // The session may have been switched while PowerShell ran.
+            const output = await api.executeShellCommand(cmd, explorerState?.path || null);
+            // The session may have been switched while the command ran.
             if (isStale()) return;
             const failed = /\[Exit code:\s*-?\d+\s*—\s*Failed\]/.test(output);
             if (failed) {
@@ -908,7 +921,7 @@ function MainApp() {
     autoStepPending.current = false;
     api.resetLoopDetector().catch(() => {});
 
-    // If a PowerShell process is still running, ask the user whether to kill it.
+    // If a command is still running, ask the user whether to kill it.
     try {
       const running = await api.getRunningCommand();
       if (running) {
@@ -940,7 +953,7 @@ function MainApp() {
       role: "tool",
       content,
       tool_calls: id
-        ? [{ id, function: { name: TOOLS.RUN_POWERSHELL, arguments: {} } }]
+        ? [{ id, function: { name: platform.shell_tool_name, arguments: {} } }]
         : undefined,
     };
   }
@@ -953,7 +966,7 @@ function MainApp() {
 
     setIsExecuting(true);
     try {
-      const output = await api.executePowershell(pendingCommand, explorerState?.path || null);
+      const output = await api.executeShellCommand(pendingCommand, explorerState?.path || null);
 
       const newHistory = [...chatHistory, buildToolResult(output)];
       pendingCommandToolId.current = undefined;
@@ -1095,7 +1108,7 @@ function MainApp() {
       setChatHistory(session.messages);
       setModelName(session.model);
       // Synthesize an ExplorerState from the session's saved context so the
-      // toolbar reflects what the user was working on. The real Explorer may
+      // toolbar reflects what the user was working on. The real file manager may
       // have moved on; the user can press Sync to refresh.
       setExplorerState({
         path: session.explorer_path,
@@ -1146,7 +1159,7 @@ function MainApp() {
     const nudge: Message = {
       role: "user",
       content:
-        "Continue. You stopped without actually generating the command. Now emit the run_powershell tool call directly, OR write the complete PowerShell script inside a ```powershell code block. Do not explain again — produce the code.",
+        `Continue. You stopped without actually generating the command. Now emit the ${platform.shell_tool_name} tool call directly, OR write the complete ${platform.shell_name} script inside a code block. Do not explain again — produce the code.`,
       synthetic: true,
     };
     const newHistory: Message[] = [...chatHistory, nudge];
@@ -1210,7 +1223,7 @@ function MainApp() {
               A command is still running
             </h3>
             <p className="text-sm text-gray-400 mb-3">
-              The LLM stream was stopped, but a PowerShell process is still running on your system. Do you want to kill it?
+              The LLM stream was stopped, but a command is still running on your system. Do you want to kill it?
             </p>
             <div className="bg-black/50 border border-gray-800 rounded-md p-3 mb-4 max-h-32 overflow-y-auto">
               <code className="text-xs text-gray-300 break-all whitespace-pre-wrap font-mono">
@@ -1242,6 +1255,8 @@ function MainApp() {
         <SettingsPage
           ollamaUrl={tempOllamaUrl}
           onOllamaUrlChange={setTempOllamaUrl}
+          platform={platform}
+          onError={showError}
           openrouterKey={openrouterKey}
           anthropicKey={anthropicKey}
           onOpenrouterKeyChange={setOpenrouterKey}
@@ -1283,7 +1298,7 @@ function MainApp() {
                   ? 'bg-gray-800/80 text-gray-300 hover:bg-gray-700 border border-gray-700'
                   : 'bg-indigo-600 text-white hover:bg-indigo-500'
                 }`}
-              title={explorerState ? "Click to sync with Explorer" : "Sync with Explorer"}
+              title={explorerState ? `Click to sync with ${platform.file_manager}` : `Sync with ${platform.file_manager}`}
             >
               {loading ? (
                 <RefreshCw size={14} className="animate-spin" />
@@ -1429,6 +1444,17 @@ function MainApp() {
                 } catch {
                   // ignore — previews refresh on next Settings open
                 }
+                await fetchModels();
+                refreshProviderStatus();
+              }}
+              ollamaUrl={ollamaUrl}
+              onSaveOllamaUrl={async (url) => {
+                await api.setOllamaUrl(url);
+                setOllamaUrl(url);
+                // Keep the Settings draft in sync so opening Settings next
+                // doesn't show the stale URL and save over this one.
+                setTempOllamaUrl(url);
+                setOllamaConnected(null);
                 await fetchModels();
                 refreshProviderStatus();
               }}

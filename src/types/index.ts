@@ -3,6 +3,39 @@ export interface ExplorerState {
   selected_files: string[];
 }
 
+/// Diagnostic payload from `get_explorer_debug`. The backend returns a
+/// different shape per platform (Windows reports HWNDs and shell-window
+/// matching; macOS reports Finder state and whether Apple events are
+/// permitted), so every field is optional and the UI shows what it gets.
+export interface ExplorerDebugInfo {
+  os?: string;
+  // macOS
+  automation_authorized?: boolean;
+  finder_running?: boolean;
+  finder_window_count?: number;
+  front_window_target?: string;
+  resolved_path?: string;
+  selected_count?: number;
+  script_error?: string;
+  // Windows
+  foreground_class?: string;
+  target_explorer_title?: string;
+  is_explorer_window?: boolean;
+  [key: string]: unknown;
+}
+
+/// Host-OS description, fetched once at startup. Drives user-facing labels
+/// ("Sync with Finder") and the tool name used when the frontend synthesizes a
+/// tool call, so the UI can never disagree with the system prompt.
+export interface PlatformInfo {
+  os: "windows" | "macos" | "linux";
+  os_name: string;
+  file_manager: string;
+  shell_name: string;
+  shell_tool_name: string;
+  read_list_hint: string;
+}
+
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 export interface ToolCallFunction {
@@ -41,7 +74,7 @@ export interface QuestionData {
 
 export interface ToolProposal {
   tool_name: string;
-  /** PowerShell script for run_powershell, or question text for ask_user_question. */
+  /** Shell script for the shell tool, or question text for ask_user_question. */
   command: string;
   tool_call_id?: string;
   /** Present only when tool_name === "ask_user_question". */

@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 /// Default global hotkey. Public so the hotkey-registration path in `lib.rs`
 /// can fall back to it when a user-set value fails to parse.
+/// Default spotlight hotkey. macOS gets Cmd rather than Ctrl: Ctrl+Alt+letter
+/// is unidiomatic there and collides with the system's Ctrl-based text
+/// navigation bindings.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_HOTKEY: &str = "Cmd+Alt+A";
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_HOTKEY: &str = "Ctrl+Alt+A";
 const CONFIG_FILE_NAME: &str = "cdout_config.json";
 
@@ -306,8 +312,11 @@ mod tests {
     /// Unique sandbox per test — tests share one process (same pid), so the
     /// test name has to be part of the path to keep parallel runs isolated.
     fn migration_sandbox(test_name: &str) -> PathBuf {
-        let base = std::env::temp_dir()
-            .join(format!("cdout_migration_{}_{}", test_name, std::process::id()));
+        let base = std::env::temp_dir().join(format!(
+            "cdout_migration_{}_{}",
+            test_name,
+            std::process::id()
+        ));
         fs::remove_dir_all(&base).ok();
         fs::create_dir_all(&base).unwrap();
         base
@@ -318,7 +327,11 @@ mod tests {
         let base = migration_sandbox("full");
         let old = base.join(LEGACY_APP_DATA_DIR_NAME);
         fs::create_dir_all(old.join("sessions")).unwrap();
-        fs::write(old.join(LEGACY_CONFIG_FILE_NAME), r#"{"hotkey":"Ctrl+Alt+A"}"#).unwrap();
+        fs::write(
+            old.join(LEGACY_CONFIG_FILE_NAME),
+            r#"{"hotkey":"Ctrl+Alt+A"}"#,
+        )
+        .unwrap();
         fs::write(old.join("api_keys.json"), r#"{"openrouter":"sk-or-x"}"#).unwrap();
         fs::write(old.join("sessions").join("123_ab.json"), "{}").unwrap();
 
@@ -350,12 +363,30 @@ mod tests {
         migrate_legacy_data_dir_in(&base);
 
         // Conflicting file: destination wins, original stays put.
-        assert_eq!(fs::read_to_string(new.join("api_keys.json")).unwrap(), "new");
-        assert_eq!(fs::read_to_string(old.join("api_keys.json")).unwrap(), "old");
+        assert_eq!(
+            fs::read_to_string(new.join("api_keys.json")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_to_string(old.join("api_keys.json")).unwrap(),
+            "old"
+        );
         // Non-conflicting file is moved over, including nested dirs.
         assert!(new.join("sessions").join("s1.json").is_file());
         assert!(!old.join("sessions").join("s1.json").exists());
         fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn default_hotkey_parses() {
+        // `lib.rs` calls `.expect()` on this at startup, so a malformed
+        // default panics the app on launch instead of degrading gracefully.
+        // The macOS default differs from the Windows one, which is exactly
+        // the kind of divergence that goes unnoticed until launch day.
+        use tauri_plugin_global_shortcut::Shortcut;
+        DEFAULT_HOTKEY
+            .parse::<Shortcut>()
+            .unwrap_or_else(|e| panic!("DEFAULT_HOTKEY '{DEFAULT_HOTKEY}' must parse: {e}"));
     }
 
     #[test]
@@ -374,7 +405,10 @@ mod tests {
         migrate_legacy_data_dir_in(&base);
 
         assert!(!old.exists(), "emptied old dir should be removed");
-        assert_eq!(fs::read_to_string(new.join(CONFIG_FILE_NAME)).unwrap(), "cfg");
+        assert_eq!(
+            fs::read_to_string(new.join(CONFIG_FILE_NAME)).unwrap(),
+            "cfg"
+        );
         assert_eq!(
             fs::read_to_string(new.join("skills").join("mine.md")).unwrap(),
             "skill"
@@ -401,7 +435,10 @@ mod tests {
 
         migrate_legacy_data_dir_in(&base);
 
-        assert_eq!(fs::read_to_string(new.join(CONFIG_FILE_NAME)).unwrap(), "current");
+        assert_eq!(
+            fs::read_to_string(new.join(CONFIG_FILE_NAME)).unwrap(),
+            "current"
+        );
         assert_eq!(
             fs::read_to_string(new.join(LEGACY_CONFIG_FILE_NAME)).unwrap(),
             "legacy"

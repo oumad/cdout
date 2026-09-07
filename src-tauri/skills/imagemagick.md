@@ -20,5 +20,5 @@ You have **ImageMagick** available for image processing:
 ### Tips
 - On systems with v7, use `magick` command. On v6, use `convert`.
 - Use `mogrify` (with `-path`) for in-place batch ops (always specify output path!).
-- For batch ops, use PowerShell `foreach` with `magick` per file.
+- For batch ops, loop over the selected files and run `magick` once per file.
 - Always output to new files to protect originals.

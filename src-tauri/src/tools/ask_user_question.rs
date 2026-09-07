@@ -10,7 +10,7 @@ impl Tool for AskUserQuestionTool {
 
     fn description(&self) -> &str {
         "Ask the user a multiple-choice question when their request is ambiguous. \
-        Use this BEFORE proposing a PowerShell command if the answer would meaningfully \
+        Use this BEFORE proposing a shell command if the answer would meaningfully \
         change the command — e.g. rename pattern (date prefix vs sequence), output format \
         (mp4 vs mov), or whether to overwrite originals. Do not use for trivial choices. \
         The user picks one option and the answer is fed back as the tool result."
@@ -97,8 +97,7 @@ impl Tool for AskUserQuestionTool {
         // user's selection as a tool_result message — execute is never called
         // server-side. If it is, surface a clear error so the bug is obvious.
         ToolResult {
-            output: "ask_user_question must be answered through the UI, not executed."
-                .to_string(),
+            output: "ask_user_question must be answered through the UI, not executed.".to_string(),
             is_error: true,
         }
     }

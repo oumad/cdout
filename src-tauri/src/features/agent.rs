@@ -32,7 +32,8 @@ pub struct QuestionData {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ToolProposal {
     pub tool_name: String,
-    /// For run_powershell: the PowerShell script. For ask_user_question: the question text.
+    /// For the shell tool: the script to run. For ask_user_question: the
+    /// question text.
     pub command: String,
     pub tool_call_id: Option<String>,
     /// Present only for ask_user_question — drives the multiple-choice UI.
@@ -96,14 +97,13 @@ fn extract_tool_proposals(msg: &Message, registry: &ToolRegistry) -> Vec<ToolPro
 
         if call.function.name == ASK_USER_QUESTION_TOOL {
             // ask_user_question carries structured options instead of a command string.
-            let qd: QuestionData =
-                match serde_json::from_value(call.function.arguments.clone()) {
-                    Ok(q) => q,
-                    Err(e) => {
-                        eprintln!("Failed to parse ask_user_question arguments: {}", e);
-                        continue;
-                    }
-                };
+            let qd: QuestionData = match serde_json::from_value(call.function.arguments.clone()) {
+                Ok(q) => q,
+                Err(e) => {
+                    eprintln!("Failed to parse ask_user_question arguments: {}", e);
+                    continue;
+                }
+            };
             proposals.push(ToolProposal {
                 tool_name: call.function.name.clone(),
                 command: qd.question.clone(),
@@ -126,7 +126,13 @@ fn extract_tool_proposals(msg: &Message, registry: &ToolRegistry) -> Vec<ToolPro
         }
 
         proposals.push(ToolProposal {
-            tool_name: call.function.name.clone(),
+            // `tool.name()`, not `call.function.name`: a model (or a session
+            // recorded on the other OS) may have used the alias spelling of
+            // the shell tool, and everything downstream — the lone-command
+            // collapse below, loop fingerprints — compares against the
+            // canonical name. The assistant message keeps its original
+            // wording; only our view of it is normalised.
+            tool_name: tool.name().to_string(),
             command: display_command.to_string(),
             tool_call_id: call.id.clone(),
             question_data: None,
@@ -137,7 +143,13 @@ fn extract_tool_proposals(msg: &Message, registry: &ToolRegistry) -> Vec<ToolPro
 
 /// Fallback: extract command when the model outputs a raw tool call as text.
 fn extract_raw_tool_call(content: &str) -> Option<String> {
-    let idx = content.find(TOOL_NAME)?;
+    // Any known spelling counts. Models frequently write `run_powershell[ARGS]`
+    // in prose even when told the tool is `run_shell` — refusing to parse that
+    // would silently drop a perfectly good command into chat text.
+    let idx = tools::SHELL_TOOL_ALIASES
+        .iter()
+        .filter_map(|alias| content.find(alias))
+        .min()?;
     let rest = &content[idx..];
 
     let cmd_key_idx = rest.find("\"command\"")?;
@@ -187,7 +199,7 @@ fn is_success_summary(content_lower: &str) -> bool {
 /// Pick the proposal we should surface to the user when the model emitted
 /// multiple in a single turn. ask_user_question always wins — if the model is
 /// asking for clarification, that pauses the loop regardless of any sibling
-/// run_powershell proposal.
+/// shell-command proposal.
 fn select_proposal(proposals: &[ToolProposal]) -> Option<&ToolProposal> {
     proposals
         .iter()
@@ -227,14 +239,13 @@ fn process_response(
         history.push(response_msg.clone());
         let verdict = select_proposal(&proposals).and_then(detect_loop);
         // Collapse to the compact CommandProposal shape ONLY for a lone
-        // run_powershell. ask_user_question carries `question_data` that the
+        // shell command. ask_user_question carries `question_data` that the
         // CommandProposal variant can't hold — collapsing it would drop the
         // multiple-choice payload and the frontend would render it as a
-        // PowerShell command. So any question (or multiple proposals) goes
+        // shell command. So any question (or multiple proposals) goes
         // through ToolProposals which preserves question_data.
-        let is_lone_powershell =
-            proposals.len() == 1 && proposals[0].tool_name == TOOL_NAME;
-        let response = if is_lone_powershell {
+        let is_lone_shell_command = proposals.len() == 1 && proposals[0].tool_name == TOOL_NAME;
+        let response = if is_lone_shell_command {
             AgentResponse::CommandProposal(proposals[0].command.clone())
         } else {
             AgentResponse::ToolProposals(proposals)
@@ -252,8 +263,8 @@ fn process_response(
     //    extraction from prose like "I successfully ran echo X."
     let content_lower = response_msg.content.to_lowercase();
     if !is_success_summary(&content_lower) {
-        if let Some(cmd) =
-            extract_code_block(&response_msg.content).or_else(|| extract_raw_tool_call(&response_msg.content))
+        if let Some(cmd) = extract_code_block(&response_msg.content)
+            .or_else(|| extract_raw_tool_call(&response_msg.content))
         {
             history.push(response_msg.clone());
             let synthetic = ToolProposal {
@@ -402,7 +413,28 @@ mod tests {
         assert_eq!(proposals.len(), 1);
         assert_eq!(proposals[0].command, "Get-ChildItem");
         assert_eq!(proposals[0].tool_call_id, Some("toolu_abc123".to_string()));
-        assert_eq!(proposals[0].tool_name, "run_powershell");
+        // The fixture uses the Windows spelling; proposals report the
+        // canonical name for the platform under test.
+        assert_eq!(proposals[0].tool_name, TOOL_NAME);
+    }
+
+    #[test]
+    fn test_extract_tool_proposals_normalizes_cross_platform_tool_name() {
+        // A session recorded on the other OS must still surface an approvable
+        // command rather than being skipped as an unknown tool.
+        let registry = tools::build_default_registry();
+        for alias in tools::SHELL_TOOL_ALIASES {
+            let msg = make_msg_with_tool_calls(vec![ToolCall {
+                id: None,
+                function: FunctionCall {
+                    name: (*alias).to_string(),
+                    arguments: json!({ "command": "echo hi" }),
+                },
+            }]);
+            let proposals = extract_tool_proposals(&msg, &registry);
+            assert_eq!(proposals.len(), 1, "alias {alias} should be accepted");
+            assert_eq!(proposals[0].tool_name, TOOL_NAME);
+        }
     }
 
     #[test]
@@ -754,7 +786,10 @@ mod tests {
         let r = process_response(&msg, &registry, &mut history);
         match r.response {
             AgentResponse::Text(_) => {}
-            other => panic!("Expected Text, got {:?}", serde_json::to_value(&other).unwrap()),
+            other => panic!(
+                "Expected Text, got {:?}",
+                serde_json::to_value(&other).unwrap()
+            ),
         }
     }
 

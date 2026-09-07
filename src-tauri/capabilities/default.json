@@ -20,6 +20,7 @@
     "core:window:allow-unminimize",
     "core:window:allow-start-dragging",
     "core:window:allow-set-skip-taskbar",
-    "core:window:allow-set-shadow"
+    "core:window:allow-set-shadow",
+    "core:window:allow-set-visible-on-all-workspaces"
   ]
 }

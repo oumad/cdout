@@ -1,6 +1,7 @@
 //! Persistent multi-session chat history.
 //!
-//! Sessions are JSON files under `%APPDATA%/cdout/sessions/<id>.json`.
+//! Sessions are JSON files under the app data dir — `%APPDATA%/cdout/sessions`
+//! on Windows, `~/Library/Application Support/cdout/sessions` on macOS.
 //! One file per session keeps the format auditable (you can `cat` it),
 //! sidebar-friendly (scan dir, parse metadata), and survives crashes — the
 //! frontend debounces saves so the worst-case data loss is the last ~500ms of
@@ -48,13 +49,12 @@ pub struct Session {
 // --- Storage layout ---
 
 fn sessions_dir() -> Result<PathBuf, String> {
-    let base = dirs::config_dir()
-        .ok_or_else(|| "Failed to locate user config directory".to_string())?;
+    let base =
+        dirs::config_dir().ok_or_else(|| "Failed to locate user config directory".to_string())?;
     let dir = base
         .join(crate::constants::APP_DATA_DIR_NAME)
         .join(SESSIONS_DIR_NAME);
-    fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create sessions directory: {}", e))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions directory: {}", e))?;
     Ok(dir)
 }
 
@@ -163,10 +163,9 @@ pub fn save_messages(
     last_active_at: i64,
 ) -> Result<SessionMeta, String> {
     let path = session_path(id)?;
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| format!("Session {} not found: {}", id, e))?;
-    let mut session: Session = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse session {}: {}", id, e))?;
+    let raw = fs::read_to_string(&path).map_err(|e| format!("Session {} not found: {}", id, e))?;
+    let mut session: Session =
+        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse session {}: {}", id, e))?;
     session.meta.last_active_at = last_active_at;
     session.meta.message_count = messages.len();
     session.messages = messages;
@@ -176,8 +175,7 @@ pub fn save_messages(
 
 pub fn load_session(id: &str) -> Result<Session, String> {
     let path = session_path(id)?;
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| format!("Session {} not found: {}", id, e))?;
+    let raw = fs::read_to_string(&path).map_err(|e| format!("Session {} not found: {}", id, e))?;
     serde_json::from_str(&raw).map_err(|e| format!("Failed to parse session: {}", e))
 }
 
@@ -207,20 +205,28 @@ pub fn list_sessions() -> Result<Vec<SessionMeta>, String> {
         let value: serde_json::Value = match serde_json::from_str(&raw) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[sessions] skip {}: json parse failed: {}", path.display(), e);
+                eprintln!(
+                    "[sessions] skip {}: json parse failed: {}",
+                    path.display(),
+                    e
+                );
                 continue;
             }
         };
         let meta: SessionMeta = match serde_json::from_value(value.clone()) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("[sessions] skip {}: meta parse failed: {}", path.display(), e);
+                eprintln!(
+                    "[sessions] skip {}: meta parse failed: {}",
+                    path.display(),
+                    e
+                );
                 continue;
             }
         };
         out.push(meta);
     }
-    out.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.last_active_at));
     Ok(out)
 }
 
@@ -235,10 +241,9 @@ pub fn delete_session(id: &str) -> Result<(), String> {
 
 pub fn rename_session(id: &str, new_title: &str) -> Result<SessionMeta, String> {
     let path = session_path(id)?;
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| format!("Session {} not found: {}", id, e))?;
-    let mut session: Session = serde_json::from_str(&raw)
-        .map_err(|e| format!("Failed to parse session {}: {}", id, e))?;
+    let raw = fs::read_to_string(&path).map_err(|e| format!("Session {} not found: {}", id, e))?;
+    let mut session: Session =
+        serde_json::from_str(&raw).map_err(|e| format!("Failed to parse session {}: {}", id, e))?;
     let cleaned = make_title(new_title);
     if cleaned == "(empty prompt)" {
         return Err("Title cannot be empty".to_string());
@@ -258,7 +263,9 @@ mod tests {
     // All tests touch the same on-disk dir. Serialize to avoid interleaving.
     fn serial_lock() -> std::sync::MutexGuard<'static, ()> {
         static L: OnceLock<Mutex<()>> = OnceLock::new();
-        L.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+        L.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     fn cleanup() {
@@ -317,8 +324,14 @@ mod tests {
             content: "rename photos".to_string(),
             ..Default::default()
         }];
-        let s = create_session("rename photos", "C:/Users/x", 3, "anthropic/claude-opus-4.7", msgs)
-            .unwrap();
+        let s = create_session(
+            "rename photos",
+            "C:/Users/x",
+            3,
+            "anthropic/claude-opus-4.7",
+            msgs,
+        )
+        .unwrap();
         let loaded = load_session(&s.meta.id).unwrap();
         assert_eq!(loaded.meta.id, s.meta.id);
         assert_eq!(loaded.meta.title, "rename photos");

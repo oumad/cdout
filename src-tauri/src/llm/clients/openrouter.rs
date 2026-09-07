@@ -156,7 +156,11 @@ pub async fn chat_openrouter_stream(
             if let Some(err) = data.get("error") {
                 return Err(format!("OpenRouter stream error: {}", err));
             }
-            if data["choices"][0].get("finish_reason").and_then(|v| v.as_str()) == Some("error") {
+            if data["choices"][0]
+                .get("finish_reason")
+                .and_then(|v| v.as_str())
+                == Some("error")
+            {
                 return Err(format!(
                     "OpenRouter stream finished with error: {}",
                     data["choices"][0]
@@ -226,8 +230,7 @@ fn collect_tool_calls(
     let mut calls: Vec<(usize, ToolCall)> = acc
         .into_iter()
         .map(|(idx, (id, name, args_str))| {
-            let arguments: serde_json::Value =
-                serde_json::from_str(&args_str).unwrap_or(json!({}));
+            let arguments: serde_json::Value = serde_json::from_str(&args_str).unwrap_or(json!({}));
             (
                 idx,
                 ToolCall {
@@ -322,7 +325,11 @@ mod tests {
         if let Some(err) = data.get("error") {
             return Err(format!("OpenRouter stream error: {}", err));
         }
-        if data["choices"][0].get("finish_reason").and_then(|v| v.as_str()) == Some("error") {
+        if data["choices"][0]
+            .get("finish_reason")
+            .and_then(|v| v.as_str())
+            == Some("error")
+        {
             return Err(format!(
                 "OpenRouter stream finished with error: {}",
                 data["choices"][0]

@@ -6,10 +6,12 @@ import {
   CheckCircle,
   XCircle,
   ExternalLink,
+  Stethoscope,
 } from "lucide-react";
-import type { Skill, QuarantinedSkill } from "../types";
+import type { Skill, QuarantinedSkill, PlatformInfo } from "../types";
+import { FileAccessDiagnostics } from "./FileAccessDiagnostics";
 
-type SettingsCategory = "providers" | "skills";
+type SettingsCategory = "providers" | "skills" | "diagnostics";
 
 interface SettingsPageProps {
   // Local
@@ -31,6 +33,10 @@ interface SettingsPageProps {
   skills: Skill[];
   quarantinedSkills: QuarantinedSkill[];
 
+  // Diagnostics
+  platform: PlatformInfo;
+  onError?: (msg: string) => void;
+
   // Actions
   onSave: () => void;
   onClose: () => void;
@@ -43,6 +49,7 @@ const CATEGORIES: {
 }[] = [
   { id: "providers", label: "Providers", icon: KeyRound },
   { id: "skills", label: "Skills", icon: Sparkles },
+  { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
 ];
 
 export function SettingsPage(props: SettingsPageProps) {
@@ -107,6 +114,29 @@ export function SettingsPage(props: SettingsPageProps) {
               skills={props.skills}
               quarantined={props.quarantinedSkills}
             />
+          )}
+          {active === "diagnostics" && (
+            <>
+              <SectionHeader
+                title="Diagnostics"
+                description={`Why the agent can or cannot see your ${props.platform.file_manager} selection.`}
+              />
+              <FileAccessDiagnostics
+                platform={props.platform}
+                onError={props.onError}
+              />
+              <div className="mt-8 text-xs text-gray-500 leading-relaxed space-y-1.5">
+                <div>
+                  Shell: <code className="text-gray-300">{props.platform.shell_name}</code>
+                  {" · "}tool:{" "}
+                  <code className="text-gray-300">{props.platform.shell_tool_name}</code>
+                </div>
+                <div>
+                  Platform:{" "}
+                  <code className="text-gray-300">{props.platform.os_name}</code>
+                </div>
+              </div>
+            </>
           )}
         </div>
       </section>

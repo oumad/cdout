@@ -10,6 +10,8 @@ import type {
   ListSkillsResult,
   Session,
   SessionMeta,
+  PlatformInfo,
+  ExplorerDebugInfo,
 } from "../types";
 
 // Explorer
@@ -17,8 +19,21 @@ export function getExplorerStatus(): Promise<ExplorerState> {
   return invoke<ExplorerState>(CMD.GET_EXPLORER_STATUS);
 }
 
-export function getExplorerDebug(): Promise<unknown> {
-  return invoke(CMD.GET_EXPLORER_DEBUG);
+export function getExplorerDebug(): Promise<ExplorerDebugInfo> {
+  return invoke<ExplorerDebugInfo>(CMD.GET_EXPLORER_DEBUG);
+}
+
+/** Opens the OS pane for granting file-manager access (macOS only). */
+export function openFileAccessSettings(): Promise<void> {
+  return invoke(CMD.OPEN_FILE_ACCESS_SETTINGS);
+}
+
+// Platform
+/** `listFilePath` is substituted into `read_list_hint` when provided. */
+export function getPlatformInfo(listFilePath?: string): Promise<PlatformInfo> {
+  return invoke<PlatformInfo>(CMD.GET_PLATFORM_INFO, {
+    listFilePath: listFilePath ?? null,
+  });
 }
 
 // Models
@@ -116,11 +131,11 @@ export function runAgentStepStream(
   });
 }
 
-export function executePowershell(
+export function executeShellCommand(
   command: string,
   cwd: string | null
 ): Promise<string> {
-  return invoke<string>(CMD.EXECUTE_POWERSHELL, { command, cwd });
+  return invoke<string>(CMD.EXECUTE_SHELL_COMMAND, { command, cwd });
 }
 
 export interface RunningCommand {

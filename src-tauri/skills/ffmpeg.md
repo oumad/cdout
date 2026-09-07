@@ -21,5 +21,5 @@ You have **FFmpeg** available for video/audio processing. Use it for:
 ### Tips
 - Use `-c copy` for lossless stream copy (no re-encoding) when only cutting/merging.
 - Use `-crf` (18-28) for quality control with H.264/H.265.
-- For batch ops, use PowerShell `foreach` loops over `$files`.
+- For batch ops, loop over the selected files using the shell loop shown in the SCRIPT TEMPLATE.
 - Always output to new files, never overwrite the input.

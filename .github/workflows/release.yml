@@ -1,12 +1,16 @@
 name: Release
 
-# Build Windows installers + a portable zip whenever a version tag is pushed.
+# Build installers for Windows and macOS whenever a version tag is pushed.
 #   git tag v0.1.0 && git push origin v0.1.0
 # Produces a GitHub Release (draft by default — flip `releaseDraft` to false to
 # publish automatically) carrying:
-#   - cdout_<version>_x64-setup.exe   (NSIS installer)
-#   - cdout_<version>_x64_en-US.msi   (MSI installer)
-#   - cdout-<version>-portable-x64.zip (no-install, unzip-and-run)
+#   - cdout_<version>_x64-setup.exe        (Windows, NSIS installer)
+#   - cdout_<version>_x64_en-US.msi        (Windows, MSI installer)
+#   - cdout-<version>-portable-x64.zip     (Windows, no-install, unzip-and-run)
+#   - cdout_<version>_universal.dmg        (macOS, Intel + Apple silicon)
+#
+# Both jobs target the same tag, so tauri-action attaches their artifacts to
+# one release rather than creating two.
 
 on:
   push:
@@ -20,7 +24,22 @@ permissions:
 
 jobs:
   release:
-    runs-on: windows-latest
+    strategy:
+      # Never cancel the Windows build because the macOS one failed (or vice
+      # versa) — a half-populated draft release is easier to finish by hand
+      # than a fully cancelled one.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ""
+          # A universal binary is one download for both Intel and Apple
+          # silicon Macs; the alternative is two DMGs users have to choose
+          # between.
+          - os: macos-latest
+            args: "--target universal-apple-darwin"
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -35,16 +54,23 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Separate step rather than the action's `targets:` input, which would
+      # otherwise receive an empty string on the Windows runner.
+      - name: Add macOS universal targets
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          key: ${{ matrix.os }}
 
       - name: Install frontend dependencies
         run: npm ci
 
-      # Builds the frontend + Rust app and bundles the NSIS + MSI installers,
-      # then creates/updates the GitHub Release and uploads them to it.
+      # Builds the frontend + Rust app, bundles the platform installers, then
+      # creates/updates the GitHub Release and uploads them to it.
       - name: Build app and create release
         id: tauri
         uses: tauri-apps/tauri-action@v0
@@ -56,19 +82,28 @@ jobs:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('cdout {0}', github.ref_name) || '' }}
           releaseBody: |
-            Windows build of cdout ${{ github.ref_name }}.
+            cdout ${{ github.ref_name }}.
 
-            **Install:** download the `.exe` (recommended) or `.msi` and run it.
-            **Portable:** download the `-portable-x64.zip`, unzip anywhere, run `cdout.exe`.
-
+            **Windows** — download the `.exe` (recommended) or `.msi` and run it.
+            Portable: download the `-portable-x64.zip`, unzip anywhere, run `cdout.exe`.
             Settings and sessions live in `%APPDATA%\cdout`.
+
+            **macOS** — download the `.dmg` and drag cdout to Applications.
+            The build is unsigned, so the first launch needs a right-click →
+            **Open** (or `xattr -dr com.apple.quarantine /Applications/cdout.app`).
+            On first use cdout asks for permission to control Finder — that is
+            how it reads your open folder and selected files; without it the
+            file context stays empty. Settings and sessions live in
+            `~/Library/Application Support/cdout`.
           releaseDraft: true
           prerelease: false
+          args: ${{ matrix.args }}
 
-      # The installers require admin/uninstall; a portable build is just the
-      # raw exe plus the bundled skills next to it (so `resource_dir()` resolves
-      # them) and a short readme. tauri-action already produced the exe above.
+      # The Windows installers require admin/uninstall; a portable build is just
+      # the raw exe plus the bundled skills next to it (so `resource_dir()`
+      # resolves them) and a short readme. tauri-action already produced the exe.
       - name: Stage portable build
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
@@ -93,7 +128,7 @@ jobs:
           "PORTABLE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload portable zip to release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
