@@ -11,6 +11,7 @@ import type {
   Session,
   SessionMeta,
   PlatformInfo,
+  ExplorerDebugInfo,
 } from "../types";
 
 // Explorer
@@ -18,8 +19,13 @@ export function getExplorerStatus(): Promise<ExplorerState> {
   return invoke<ExplorerState>(CMD.GET_EXPLORER_STATUS);
 }
 
-export function getExplorerDebug(): Promise<unknown> {
-  return invoke(CMD.GET_EXPLORER_DEBUG);
+export function getExplorerDebug(): Promise<ExplorerDebugInfo> {
+  return invoke<ExplorerDebugInfo>(CMD.GET_EXPLORER_DEBUG);
+}
+
+/** Opens the OS pane for granting file-manager access (macOS only). */
+export function openFileAccessSettings(): Promise<void> {
+  return invoke(CMD.OPEN_FILE_ACCESS_SETTINGS);
 }
 
 // Platform

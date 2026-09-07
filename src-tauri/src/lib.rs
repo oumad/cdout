@@ -34,6 +34,31 @@ fn get_explorer_debug() -> Result<explorer::ExplorerDebugInfo, String> {
     explorer::get_explorer_debug_info().map_err(|e| e.to_string())
 }
 
+/// Open the OS pane where the user grants cdout permission to inspect the
+/// file manager. On macOS a denied Apple-events prompt never reappears, so
+/// without a deep link the only fix is a five-click hunt through System
+/// Settings — the single most likely reason file context stays empty.
+#[tauri::command]
+fn open_file_access_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
+            .status()
+            .map_err(|e| format!("Failed to open System Settings: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Explorer introspection needs no grant, so there is no pane to open.
+        Err(format!(
+            "{} needs no permission grant on {}",
+            platform::FILE_MANAGER,
+            platform::OS_NAME
+        ))
+    }
+}
+
 /// Everything the UI needs to describe the host OS: which file manager to
 /// name in labels, what the shell tool is called, how to render modifier keys.
 /// Sent once at startup rather than sniffed from the user agent, so the
@@ -667,6 +692,7 @@ pub fn run() {
             get_explorer_status,
             get_explorer_debug,
             get_platform_info,
+            open_file_access_settings,
             get_ollama_models,
             get_provider_status,
             get_ollama_url,
