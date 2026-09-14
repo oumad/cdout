@@ -19,6 +19,7 @@ const FALLBACK: PlatformInfo = navigator.userAgent.includes("Mac")
       shell_name: "zsh",
       shell_tool_name: "run_shell",
       read_list_hint: "",
+      default_hotkey: "Cmd+Alt+A",
     }
   : {
       os: "windows",
@@ -27,6 +28,7 @@ const FALLBACK: PlatformInfo = navigator.userAgent.includes("Mac")
       shell_name: "PowerShell",
       shell_tool_name: "run_powershell",
       read_list_hint: "",
+      default_hotkey: "Ctrl+Alt+A",
     };
 
 export function usePlatform(): PlatformInfo {

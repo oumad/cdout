@@ -10,6 +10,7 @@ const WINDOWS_INFO: PlatformInfo = {
   shell_name: "PowerShell",
   shell_tool_name: "run_powershell",
   read_list_hint: "Access the list using: $files = Get-Content 'x'",
+  default_hotkey: "Ctrl+Alt+A",
 };
 
 const mockGetPlatformInfo = vi.fn<() => Promise<PlatformInfo>>(

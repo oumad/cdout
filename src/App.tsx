@@ -305,6 +305,7 @@ function MainApp() {
   // Persisted policy (default: run read-only commands unattended). Distinct
   // from `autoExecute`, which is this run's opt-in from "All" or a
   // modifier-submit and resets between tasks.
+  const [hotkey, setHotkey] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("read_only");
   const approvalModeRef = useRef(approvalMode);
   approvalModeRef.current = approvalMode;
@@ -400,6 +401,7 @@ function MainApp() {
         setOllamaUrl(url);
         setTempOllamaUrl(url);
         setApprovalMode(await api.getApprovalMode());
+        setHotkey(await api.getHotkey());
       } catch (err) {
         console.error("Failed to load Ollama URL:", err);
       }
@@ -1310,6 +1312,14 @@ function MainApp() {
           onOllamaUrlChange={setTempOllamaUrl}
           platform={platform}
           onError={showError}
+          hotkey={hotkey}
+          onHotkeyChange={async (next) => {
+            // Let the recorder surface the failure: the backend only persists
+            // after the OS accepts the chord, so on error the old hotkey is
+            // still the live one and state must not move.
+            await api.setHotkey(next);
+            setHotkey(next);
+          }}
           approvalMode={approvalMode}
           onApprovalModeChange={async (mode) => {
             // Persist immediately rather than on Save: an approval policy

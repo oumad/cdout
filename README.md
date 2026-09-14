@@ -76,7 +76,8 @@ After first launch:
 ## What it does
 
 - **Spotlight prompt** — global hotkey (`Ctrl+Alt+A` on Windows, `Cmd+Alt+A`
-  on macOS) opens a small command palette over any window. Type a request, hit
+  on macOS; rebindable in Settings → General) opens a small command palette
+  over any window. Type a request, hit
   Enter, the main window spawns/foregrounds and runs the agent in a fresh
   session.
 - **File-manager-aware** — the agent sees the current Explorer/Finder window's
@@ -161,6 +162,7 @@ After first launch:
 | `components/ModelSelector.tsx` | Provider-grouped `<optgroup>` (`Local (Ollama)` / `Anthropic (direct · cached)` / `OpenRouter`) |
 | `components/MigrationBanner.tsx` | One-shot banner shown when legacy CLI/Antigravity/openai/gemini creds are detected. "Clean up legacy creds" button calls `cleanup_legacy_credentials` |
 | `components/SettingsPage.tsx` | OpenRouter + Anthropic key fields (masked previews, never plaintext to renderer state), Ollama URL, free-tier toggle, quarantined-skill viewer, Diagnostics tab |
+| `components/HotkeyRecorder.tsx` | Shows the current hotkey as keycaps and records a new chord. Canonicalises before comparing, so re-pressing the same combination in a different modifier order is not treated as a change |
 | `components/FileAccessDiagnostics.tsx` | Explains why file context is empty. Distinguishes "permission denied" from "no window open", and deep-links the macOS Automation pane |
 
 ### Data flow — one agent turn
@@ -359,7 +361,8 @@ over. See `config::migrate_legacy_data_dir`.
 | `get_openrouter_disclosure_ack` / `set_openrouter_disclosure_ack` | | One-shot migration banner ack |
 | `has_legacy_credentials` | `bool` | Detects + auto-purges legacy `openai`/`gemini` fields from `api_keys.json` |
 | `cleanup_legacy_credentials` | | Removes cdout's antigravity creds always; third-party CLI files only when `removeThirdParty: true` |
-| `get_hotkey` / `set_hotkey` | | |
+| `get_hotkey` | `String` | The currently registered chord |
+| `set_hotkey` | | Re-registers with the OS **first**, and only writes to disk once that succeeds — so a chord another app owns cannot become the value loaded at next launch. Takes effect immediately, no restart |
 | `init_agent_conversation` | `Vec<Message>` | Builds the system + initial user message. Takes optional `model` to switch native-tool-specs flag |
 | `list_sessions` | `Vec<SessionMeta>` | Sidebar list, sorted by `last_active_at` desc |
 | `load_session` / `create_session` / `save_session_messages` / `delete_session` / `rename_session` | | Session CRUD |
@@ -408,7 +411,7 @@ over. See `config::migrate_legacy_data_dir`.
   - `features/explorer/macos.rs` — AppleScript payload parsing (folder vs file paths, desktop selections, filenames containing newlines), TCC-denial recognition
   - `agent.rs` — tool-proposal extraction, AgentStepResult serialization shape, loop-verdict escalation
 
-- Frontend: **51 vitest tests** (`npm test`).
+- Frontend: **70 vitest tests** (`npm test`).
   - `agent.test.ts` — `isTaskComplete` patterns
   - `useError.test.ts` — show/clear/auto-dismiss timing
   - `useModels.test.ts` — model-list reconciliation + stale-slug swap
@@ -417,6 +420,7 @@ over. See `config::migrate_legacy_data_dir`.
   - `usePlatform.test.ts` — fallback before the backend answers, replacement after, and degradation when the IPC call fails
   - `FileAccessDiagnostics.test.tsx` — denial vs no-window-open vs working, the deep-link action, and that Windows is never offered a permission fix
   - `CommandApproval.test.tsx` — the destructive/writes/read-only badges, and that approve-once vs approve-all still differ
+  - `HotkeyRecorder.test.tsx` — chord building and per-platform Meta mapping, refusal of modifier-less chords, Escape-cancels, surfacing an OS refusal without moving state, and canonical equality across modifier order
   - `ProviderSetup.test.tsx` — both onboarding paths including the remote-Ollama URL (save, trim, unchanged-URL no-op, error surfacing)
 
 Run both via `cargo test --lib && npm test` from project root. CI runs the
@@ -499,10 +503,12 @@ seeds the Homebrew prefixes to compensate, so this usually means the tool
 genuinely is not installed — check with `which ffmpeg` in a terminal.
 Settings → Skills lists exactly which binaries are missing.
 
-**The hotkey does nothing.** Another app has claimed it. Change it in
-Settings; an unparseable value is rejected at the write boundary, and a
-corrupt one on disk falls back to the built-in default rather than bricking
-startup.
+**The hotkey does nothing.** Another app has claimed the chord — the OS gives
+no feedback when it refuses a registration. Settings → **General** shows the
+current hotkey and records a new one: press the keys you want, and if the OS
+refuses, cdout says so and keeps the previous binding. A corrupt value on
+disk falls back to the built-in default rather than bricking startup, and the
+spotlight is always reachable from the tray/menu bar regardless.
 
 **A local model writes commands but never runs them.** It is not emitting
 native tool calls. cdout has text-extraction fallbacks, but they are a

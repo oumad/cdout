@@ -88,6 +88,9 @@ struct PlatformInfo {
     file_manager: &'static str,
     shell_name: &'static str,
     shell_tool_name: &'static str,
+    /// This platform's built-in hotkey, so the UI can offer a Reset without
+    /// hardcoding a value that differs per OS.
+    default_hotkey: &'static str,
     /// Prose telling the model how to read a written-out file list, already
     /// substituted with `path` — the frontend pastes this into its
     /// "files have changed" context updates.
@@ -102,6 +105,7 @@ fn get_platform_info(list_file_path: Option<String>) -> PlatformInfo {
         file_manager: platform::FILE_MANAGER,
         shell_name: platform::SHELL.name,
         shell_tool_name: platform::SHELL.tool_name,
+        default_hotkey: config::DEFAULT_HOTKEY,
         read_list_hint: platform::with_list_file(
             platform::SHELL.read_list_hint,
             list_file_path.as_deref().unwrap_or("{LIST_FILE}"),
@@ -606,15 +610,45 @@ fn get_hotkey() -> Result<String, String> {
     Ok(config::get_hotkey())
 }
 
-#[tauri::command]
-fn set_hotkey(hotkey: String) -> Result<(), String> {
-    // Reject an unparseable hotkey at the write boundary so a bad value never
-    // reaches disk (the startup path also falls back gracefully, but this
-    // gives the user immediate feedback instead of a silent default swap on
-    // next launch).
-    hotkey
+/// Point the global shortcut at `hotkey`, replacing whatever was registered.
+///
+/// `unregister_all` rather than unregistering a remembered shortcut: the app
+/// only ever owns one, and this way a half-failed previous attempt cannot
+/// leave a stale binding alive that still opens the spotlight.
+fn register_hotkey(app: &tauri::AppHandle, hotkey: &str) -> Result<(), String> {
+    let shortcut = hotkey
         .parse::<Shortcut>()
         .map_err(|e| format!("Invalid hotkey '{hotkey}': {e}"))?;
+
+    let _ = app.global_shortcut().unregister_all();
+
+    let app_for_handler = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                if let Some(spotlight) = app_for_handler.get_webview_window("spotlight") {
+                    center_on_cursor_monitor(&spotlight);
+                    show_window(&spotlight);
+                }
+            }
+        })
+        .map_err(|e| {
+            // Almost always "another app already owns this chord". Say so,
+            // because the OS gives no other feedback.
+            format!(
+                "Could not register '{hotkey}': {e}. Another application may                  already be using that combination."
+            )
+        })
+}
+
+#[tauri::command]
+fn set_hotkey(hotkey: String, app_handle: tauri::AppHandle) -> Result<(), String> {
+    // Take effect immediately. Persisting without re-registering would leave
+    // the UI showing a hotkey that does nothing until the next launch, which
+    // reads as a broken setting rather than a pending one.
+    register_hotkey(&app_handle, &hotkey)?;
+    // Only reaches disk once the OS has accepted it, so a rejected chord
+    // cannot become the value loaded at next startup.
     config::set_hotkey(hotkey)
 }
 
@@ -812,41 +846,17 @@ pub fn run() {
             .build(app)?;
 
             // --- Global Hotkey ---
-            // A corrupt/unsupported hotkey string in config must NOT brick
-            // startup. Fall back to the built-in default; the default is a
-            // compile-time-known-good literal so its parse cannot fail.
+            // A corrupt, unsupported or already-taken hotkey in config must
+            // NOT brick startup: fall back to the built-in default, which is
+            // a compile-time-known-good literal.
             let hotkey_str = config::get_hotkey();
-            let hotkey_spotlight = spotlight_window.clone();
-            let shortcut = match hotkey_str.parse::<Shortcut>() {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!(
-                        "[hotkey] Invalid hotkey '{hotkey_str}' in config ({e}); \
-                         falling back to default '{}'",
-                        config::DEFAULT_HOTKEY
-                    );
-                    config::DEFAULT_HOTKEY
-                        .parse::<Shortcut>()
-                        .expect("built-in default hotkey must parse")
+            if let Err(e) = register_hotkey(app.handle(), &hotkey_str) {
+                eprintln!("[hotkey] {e}; falling back to '{}'", config::DEFAULT_HOTKEY);
+                if let Err(e) = register_hotkey(app.handle(), config::DEFAULT_HOTKEY) {
+                    // Nothing left to try — the spotlight is still reachable
+                    // from the tray, so run on rather than aborting launch.
+                    eprintln!("[hotkey] default also failed: {e}");
                 }
-            };
-
-            // Unregister first in case a previous instance left it registered
-            let _ = app.global_shortcut().unregister(shortcut);
-
-            if let Err(e) =
-                app.global_shortcut()
-                    .on_shortcut(shortcut, move |_app, _shortcut, event| {
-                        if event.state == ShortcutState::Pressed {
-                            center_on_cursor_monitor(&hotkey_spotlight);
-                            show_window(&hotkey_spotlight);
-                        }
-                    })
-            {
-                eprintln!(
-                    "Warning: Failed to register global hotkey '{}': {}",
-                    hotkey_str, e
-                );
             }
 
             // --- Close to Tray (main window only) ---

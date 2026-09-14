@@ -18,6 +18,7 @@ const MAC: PlatformInfo = {
   shell_name: "zsh",
   shell_tool_name: "run_shell",
   read_list_hint: "",
+  default_hotkey: "Cmd+Alt+A",
 };
 
 const WINDOWS: PlatformInfo = {
@@ -27,6 +28,7 @@ const WINDOWS: PlatformInfo = {
   shell_name: "PowerShell",
   shell_tool_name: "run_powershell",
   read_list_hint: "",
+  default_hotkey: "Ctrl+Alt+A",
 };
 
 describe("FileAccessDiagnostics", () => {

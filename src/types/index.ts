@@ -43,6 +43,8 @@ export interface PlatformInfo {
   shell_name: string;
   shell_tool_name: string;
   read_list_hint: string;
+  /** This platform's built-in hotkey (`Ctrl+Alt+A` / `Cmd+Alt+A`). */
+  default_hotkey: string;
 }
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";

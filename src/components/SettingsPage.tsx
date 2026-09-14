@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Stethoscope,
   ShieldCheck,
+  Command,
 } from "lucide-react";
 import type {
   Skill,
@@ -16,8 +17,14 @@ import type {
   ApprovalMode,
 } from "../types";
 import { FileAccessDiagnostics } from "./FileAccessDiagnostics";
+import { HotkeyRecorder } from "./HotkeyRecorder";
 
-type SettingsCategory = "providers" | "approval" | "skills" | "diagnostics";
+type SettingsCategory =
+  | "general"
+  | "providers"
+  | "approval"
+  | "skills"
+  | "diagnostics";
 
 interface SettingsPageProps {
   // Local
@@ -39,6 +46,11 @@ interface SettingsPageProps {
   skills: Skill[];
   quarantinedSkills: QuarantinedSkill[];
 
+  // General
+  hotkey: string;
+  /** Rejects with the backend's message if the OS refuses the chord. */
+  onHotkeyChange: (hotkey: string) => Promise<void>;
+
   // Approval policy
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => void;
@@ -57,6 +69,7 @@ const CATEGORIES: {
   label: string;
   icon: typeof KeyRound;
 }[] = [
+  { id: "general", label: "General", icon: Command },
   { id: "providers", label: "Providers", icon: KeyRound },
   { id: "approval", label: "Approval", icon: ShieldCheck },
   { id: "skills", label: "Skills", icon: Sparkles },
@@ -64,7 +77,7 @@ const CATEGORIES: {
 ];
 
 export function SettingsPage(props: SettingsPageProps) {
-  const [active, setActive] = useState<SettingsCategory>("providers");
+  const [active, setActive] = useState<SettingsCategory>("general");
 
   return (
     <div className="absolute top-8 left-0 right-0 bottom-0 z-40 flex bg-gray-950">
@@ -120,6 +133,25 @@ export function SettingsPage(props: SettingsPageProps) {
       <section className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="max-w-3xl mx-auto px-10 py-8">
           {active === "providers" && <ProvidersCategory {...props} />}
+          {active === "general" && (
+            <>
+              <SectionHeader
+                title="General"
+                description="The global hotkey that opens the spotlight prompt over any window."
+              />
+              <SubSection
+                title="Spotlight hotkey"
+                description="Press the combination you want. It takes effect immediately — no restart. If another app already owns it, the OS refuses and cdout keeps the previous one."
+              >
+                <HotkeyRecorder
+                  hotkey={props.hotkey}
+                  platform={props.platform}
+                  onSave={props.onHotkeyChange}
+                  defaultHotkey={props.platform.default_hotkey}
+                />
+              </SubSection>
+            </>
+          )}
           {active === "approval" && (
             <ApprovalCategory
               mode={props.approvalMode}
