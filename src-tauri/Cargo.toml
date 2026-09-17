@@ -2,7 +2,7 @@
 name = "cdout"
 version = "0.3.1"
 description = "cdout — an AI assistant that turns file-manager selections into approved shell commands"
-authors = ["Mohamed Oumoumad <m.oumoumad@gear-productions.com>"]
+authors = ["Mohamed Oumoumad <oumoumad@gmail.com>"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
