@@ -22,6 +22,22 @@ zsh on macOS. See `src-tauri/src/platform.rs`.
 
 ---
 
+## Why this exists
+
+I built cdout for myself. A lot of my work is the same batch operations over
+and over — re-encoding clips, renaming a shoot by capture date, stripping
+metadata, pulling frames — and I got tired of assembling another ffmpeg
+incantation for a job I'd already done a dozen times. I wanted to describe
+the outcome once and read back a command I could sanity-check.
+
+It turned out useful enough day to day that it seemed worth putting out
+there, in case anyone else works the same way. Fair warning that it's shaped
+around how *I* work rather than around being a product: no account, no
+telemetry, no update server, and the defaults reflect my own taste. If that
+happens to suit you, help yourself.
+
+---
+
 ## Quick start
 
 ### Run from source
@@ -547,6 +563,30 @@ result now says so explicitly.
 
 ---
 
+## Contributing
+
+Issues and pull requests are welcome — including ones your agent wrote, which
+would be fitting enough. If something's broken, or there's a tool or workflow
+you wish it handled, open an issue or just send the patch.
+
+A couple of things that make a PR easy to take:
+
+- `cargo test --lib && npm test` from the repo root should pass. CI runs both
+  suites plus clippy and `cargo fmt --check` on Windows *and* macOS for every
+  pull request — and that matrix is the only thing that compiles both halves
+  of the platform split, since half the backend is `cfg`-ed out on any single
+  machine.
+- Anything touching command execution or the approval policy wants a test.
+  That code decides what runs on someone's files without being asked twice.
+- Platform-specific work belongs behind `src-tauri/src/platform.rs` rather
+  than sprinkled `cfg!` blocks, so the prompt and the shell can't drift apart.
+
+If you're adding a skill, note that user skills are scanned and bundled ones
+are not — a PR that ships a bundled skill is a security review, so say what
+the CLI does and why it's safe to hand a model.
+
+---
+
 ## Lineage
 
 cdout continues [**proton-io**](https://oumad.github.io/proton-io/) — *"a
@@ -567,6 +607,6 @@ skills; the Windows-only COM context grew a Finder counterpart.
 
 ## License
 
-MIT. Personal-use desktop assistant — third-party provider terms apply (don't
-ship cdout as a SaaS product without dealing with Anthropic / OpenAI /
-Google ToS yourself).
+MIT — see [LICENSE](LICENSE). Third-party provider terms still apply on top:
+don't ship cdout as a SaaS product without dealing with the Anthropic /
+OpenAI / Google / OpenRouter terms yourself.
