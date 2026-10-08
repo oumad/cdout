@@ -13,13 +13,13 @@
   to -OutDir for visual inspection.
 
 .PARAMETER Scenarios
-  Any of: text, command, question, stop, markdown. Default: all.
+  Any of: text, command, question, stop, markdown, hidden. Default: all.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-smoke.ps1
 #>
 param(
-    [string[]]$Scenarios = @("text", "command", "question", "stop", "markdown"),
+    [string[]]$Scenarios = @("text", "command", "question", "stop", "markdown", "hidden"),
     [string]$OutDir = "",
     [switch]$NoBuild
 )
@@ -318,6 +318,32 @@ function Scenario-Question {
     } finally { Stop-App $data }
 }
 
+# Close the main window to the tray, then use the hotkey with every window
+# hidden: the path that only works because orchestration runs in App::logic.
+function Scenario-Hidden {
+    $data = Start-App "text" $null
+    try {
+        if (-not (Expect "app\.start" "app started")) { return }
+        if (-not (Expect "hotkey\.registered" "hotkey registered")) { return }
+        if (-not (Expect "main\.shown" "main window shown at launch")) { return }
+        Start-Sleep -Milliseconds 900
+        Click-Element "Close" "click the title bar's Close" | Out-Null
+        Expect "main\.hidden" "Close hides the main window to the tray" 3000 | Out-Null
+        Start-Sleep -Milliseconds 600
+        if (Visible-Windows) { Fail "a window is still visible after Close" } else { Pass "no window visible" }
+        Send-Chord
+        if (-not (Expect "spotlight\.shown" "hotkey works with every window hidden" 3000)) { return }
+        Start-Sleep -Milliseconds 700
+        Type-Text "from the tray"
+        Type-Text "{ENTER}"
+        Expect "spotlight\.submitted" "submit from the spotlight" | Out-Null
+        Expect "main\.shown" "submitting brings the main window back" | Out-Null
+        Expect "agent\.step\.done kind=text" "the task runs" | Out-Null
+        Start-Sleep -Milliseconds 600
+        if (Main-Window) { Pass "main window visible again" } else { Fail "main window did not come back" }
+    } finally { Stop-App $data }
+}
+
 function Scenario-Markdown {
     $data = Start-App "markdown" $null
     try {
@@ -362,6 +388,7 @@ foreach ($s in $Scenarios) {
         "question" { Scenario-Question }
         "stop" { Scenario-Stop }
         "markdown" { Scenario-Markdown }
+        "hidden" { Scenario-Hidden }
         default { Fail "unknown scenario $s" }
     }
 }

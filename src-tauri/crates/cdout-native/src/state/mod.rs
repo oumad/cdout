@@ -392,9 +392,13 @@ pub enum Msg {
     DismissToast,
     DismissSpotlightError,
 
-    // Tray
+    // Tray and OS
     TrayShowMain,
     TrayQuit,
+    /// The app became active with no window visible (macOS dock click).
+    AppActivated,
+    /// No hotkey could be registered at startup (another app owns it).
+    HotkeyStartupFailed(String),
 
     // Async results
     StartupLoaded(StartupData),
@@ -689,6 +693,24 @@ impl AppState {
                 fx.push(Effect::ShowMain {
                     center_on_cursor: false,
                 });
+            }
+            Msg::AppActivated => {
+                // Showing the spotlight also activates the app; only a
+                // dock click with nothing on screen should open the main
+                // window.
+                if !self.main.visible && !self.spotlight.visible {
+                    self.main.visible = true;
+                    fx.push(Effect::ShowMain {
+                        center_on_cursor: false,
+                    });
+                }
+            }
+            Msg::HotkeyStartupFailed(e) => {
+                self.settings.hotkey_error = Some(e.clone());
+                self.show_toast(
+                    format!("{e} The spotlight hotkey is off; pick another one in Settings › General, or use the tray icon."),
+                    now,
+                );
             }
             Msg::TrayQuit => {
                 self.flush_save(fx);

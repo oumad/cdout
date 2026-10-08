@@ -1494,6 +1494,50 @@ fn quit_flushes_before_exiting() {
 }
 
 #[test]
+fn dock_activation_reopens_only_when_nothing_is_visible() {
+    let mut s = state();
+    s.main.visible = false;
+    assert_eq!(
+        s.update(Msg::AppActivated, t0()),
+        vec![Effect::ShowMain {
+            center_on_cursor: false
+        }]
+    );
+    assert!(s.main.visible);
+    assert!(
+        s.update(Msg::AppActivated, t0()).is_empty(),
+        "already visible"
+    );
+
+    let mut s = state();
+    s.main.visible = false;
+    s.update(Msg::HotkeyPressed, t0());
+    assert!(
+        s.update(Msg::AppActivated, t0()).is_empty(),
+        "activation caused by showing the spotlight"
+    );
+}
+
+#[test]
+fn hotkey_startup_failure_is_visible() {
+    let mut s = state();
+    s.update(
+        Msg::HotkeyStartupFailed("Could not register 'Ctrl+Alt+A'.".into()),
+        t0(),
+    );
+    assert!(s
+        .toast
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("Settings › General"));
+    assert_eq!(
+        s.settings.hotkey_error.as_deref(),
+        Some("Could not register 'Ctrl+Alt+A'.")
+    );
+}
+
+#[test]
 fn startup_shows_main_and_loads_everything() {
     let mut s = AppState::new(platform_info(None));
     let fx = s.update(Msg::Started, t0());

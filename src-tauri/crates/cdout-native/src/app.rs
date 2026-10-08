@@ -253,11 +253,17 @@ impl CdoutApp {
             Ok(()) => {
                 let hotkey_out = sender.clone();
                 hotkey::set_handler(move || hotkey_out.send(Msg::HotkeyPressed));
-                register_startup_hotkey();
+                if let Err(e) = register_startup_hotkey() {
+                    sender.send(Msg::HotkeyStartupFailed(e));
+                }
             }
             Err(e) => tracing::error!(target: "cdout", "hotkey.error manager: {e}"),
         }
 
+        platform::on_app_activated({
+            let out = sender.clone();
+            move || out.send(Msg::AppActivated)
+        });
         shared.dispatch(&ctx, Msg::Started);
         Self {
             shared: Arc::new(Mutex::new(shared)),
@@ -268,18 +274,21 @@ impl CdoutApp {
 
 /// Register the configured hotkey (or `CDOUT_HOTKEY`), falling back to the
 /// built-in default so a bad config can't leave the spotlight unreachable.
-fn register_startup_hotkey() {
+/// Errs only when nothing could be registered.
+fn register_startup_hotkey() -> Result<(), String> {
     let configured = std::env::var(hotkey::HOTKEY_ENV)
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(cdout_core::utils::config::get_hotkey);
-    if let Err(e) = hotkey::apply(&configured) {
-        let default = cdout_core::utils::config::DEFAULT_HOTKEY;
-        tracing::warn!(target: "cdout", "hotkey.error {e}; falling back to '{default}'");
-        if configured != default {
-            let _ = hotkey::apply(default);
-        }
+    let Err(first) = hotkey::apply(&configured) else {
+        return Ok(());
+    };
+    let default = cdout_core::utils::config::DEFAULT_HOTKEY;
+    if configured == default {
+        return Err(first);
     }
+    tracing::warn!(target: "cdout", "hotkey.error {first}; falling back to '{default}'");
+    hotkey::apply(default)
 }
 
 fn spotlight_pass(ui: &mut egui::Ui, shared: &Mutex<Shared>) {

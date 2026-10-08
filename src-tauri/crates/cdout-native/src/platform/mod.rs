@@ -43,6 +43,17 @@ pub fn cursor_monitor_rect(native_ppp: f32) -> Option<Rect> {
     }
 }
 
+/// Call `f` whenever the app becomes active. On macOS this is how a dock-icon
+/// click reaches us when every window is hidden (winit doesn't surface
+/// "reopen"). Elsewhere activation always goes through a window, so this is
+/// a no-op.
+pub fn on_app_activated(f: impl Fn() + Send + Sync + 'static) {
+    #[cfg(target_os = "macos")]
+    macos::on_app_activated(f);
+    #[cfg(not(target_os = "macos"))]
+    let _ = f;
+}
+
 /// One-time tweaks to the spotlight's native window, found by its title: on
 /// macOS, appear on every Space (a palette that opens on the Space you left
 /// is useless). Returns false when the window doesn't exist yet, so the

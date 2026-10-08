@@ -1,9 +1,16 @@
 //! Type-checked from Windows with `cargo check --target aarch64-apple-darwin`;
 //! runtime behaviour is unverified until it runs on a Mac.
 
+use std::ptr::NonNull;
+
+use block2::RcBlock;
 use eframe::egui::{pos2, Rect};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSEvent, NSScreen, NSWindowCollectionBehavior};
+use objc2_app_kit::{
+    NSApplication, NSApplicationDidBecomeActiveNotification, NSEvent, NSScreen,
+    NSWindowCollectionBehavior,
+};
+use objc2_foundation::{NSNotification, NSNotificationCenter};
 
 /// Frame of the screen under the mouse, in top-left-origin points (the
 /// space winit and egui use on macOS).
@@ -47,4 +54,23 @@ pub fn join_all_spaces(title: &str) -> bool {
         }
     }
     false
+}
+
+/// Run `f` on every `NSApplicationDidBecomeActiveNotification`. The observer
+/// lives for the rest of the process, so its token is deliberately leaked.
+pub fn on_app_activated(f: impl Fn() + Send + Sync + 'static) {
+    let block = RcBlock::new(move |_note: NonNull<NSNotification>| f());
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: the notification name is a valid static NSString provided by
+    // AppKit; a nil object and queue mean "any sender, posting thread"
+    // (AppKit posts this on the main thread). The block is 'static.
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationDidBecomeActiveNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    std::mem::forget(token);
 }
