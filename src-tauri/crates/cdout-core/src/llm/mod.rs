@@ -19,7 +19,7 @@ pub enum StreamChunk {
     Error { error: String },
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Message {
     pub role: String,
     pub content: String,
@@ -53,14 +53,14 @@ impl Message {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ToolCall {
     #[serde(default)]
     pub id: Option<String>,
     pub function: FunctionCall,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: Value, // Arguments are JSON object

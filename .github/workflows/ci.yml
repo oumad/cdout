@@ -63,6 +63,20 @@ jobs:
         run: cargo test --workspace --lib
         working-directory: ./src-tauri
 
+      # The native app's headless screen tests and glyph coverage are
+      # integration tests, which `--lib` above skips. Pixel snapshots are
+      # compared only locally: CI GPUs (WARP, Metal) render slightly
+      # differently from the machine that recorded them.
+      - name: Native UI tests (headless)
+        run: cargo test -p cdout-native --tests
+        working-directory: ./src-tauri
+        env:
+          CDOUT_SKIP_SNAPSHOTS: "1"
+
+      - name: Fake-LLM build of the native app
+        run: cargo clippy -p cdout-native --features fake-llm --all-targets -- -D warnings
+        working-directory: ./src-tauri
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: ./src-tauri

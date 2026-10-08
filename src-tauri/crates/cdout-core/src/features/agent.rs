@@ -26,14 +26,14 @@ const MAX_CONTEXT_RECOVERY_ATTEMPTS: usize = 2;
 
 // --- Types ---
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct QuestionOption {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct QuestionData {
     pub question: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,7 +43,7 @@ pub struct QuestionData {
     pub multi_select: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ToolProposal {
     pub tool_name: String,
     /// For the shell tool: the script to run. For ask_user_question: the
@@ -55,7 +55,7 @@ pub struct ToolProposal {
     pub question_data: Option<QuestionData>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", content = "content")]
 pub enum AgentResponse {
     Text(String),
@@ -65,7 +65,7 @@ pub enum AgentResponse {
     ToolProposals(Vec<ToolProposal>),
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AgentStepResult {
     pub response: AgentResponse,
     pub updated_history: Vec<Message>,

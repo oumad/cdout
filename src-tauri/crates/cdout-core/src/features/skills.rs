@@ -245,6 +245,7 @@ fn embedded_bundled_skills() -> (Vec<Skill>, Vec<QuarantinedSkill>) {
 /// Result of loading every skill source — safe skills plus any quarantined
 /// for safety-rule violations. Only `skills` enters the system prompt; the
 /// quarantined list is surfaced to the user for awareness.
+#[derive(Clone, Debug, Default)]
 pub struct LoadedSkills {
     pub skills: Vec<Skill>,
     pub quarantined: Vec<QuarantinedSkill>,

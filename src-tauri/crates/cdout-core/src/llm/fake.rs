@@ -12,6 +12,8 @@
 //!   `echo cdout-fake`.
 //! - `question`: proposes `ask_user_question` with two options.
 //! - `long`: streams 200 short deltas, for exercising Stop mid-stream.
+//! - `markdown`: a reply with a heading, list, table, code block, arrows and
+//!   emoji, for checking rendering and font fallback.
 //!
 //! In every scenario, once the conversation's last message is a tool result
 //! the fake replies "Task Complete", so multi-step flows terminate.
@@ -29,12 +31,16 @@ pub const DELAY_ENV: &str = "CDOUT_FAKE_LLM_DELAY_MS";
 pub const MODEL: &str = "ollama:fake";
 pub const FAKE_COMMAND: &str = "echo cdout-fake";
 
+/// Rich reply for the `markdown` scenario.
+pub const MARKDOWN_REPLY: &str = "## Plan \u{2192} convert 3 clips\n\nSteps:\n\n1. Probe each file with `ffprobe`\n2. Transcode \u{2705} keep audio\n3. Verify outputs exist \u{1F916}\n\n| File | Size | Status |\n|------|------|--------|\n| a.mov | 12 MB | ok |\n| b.mov | 8 MB | ok |\n\nIndented code (a fenced block would be taken as a command proposal):\n\n    Get-ChildItem *.mov | ForEach-Object { ffprobe $_.FullName }\n\n> Arrows \u{2190} \u{2191} \u{2193}, check \u{2714}, cross \u{274C}, accents: d\u{e9}j\u{e0} vu.\n";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scenario {
     Text,
     Command,
     Question,
     Long,
+    Markdown,
 }
 
 impl Scenario {
@@ -44,6 +50,7 @@ impl Scenario {
             "command" => Some(Self::Command),
             "question" => Some(Self::Question),
             "long" => Some(Self::Long),
+            "markdown" => Some(Self::Markdown),
             _ => None,
         }
     }
@@ -104,6 +111,13 @@ pub fn plan_reply(scenario: Scenario, history: &[Message]) -> (Vec<String>, Opti
             }]),
         ),
         Scenario::Long => ((0..200).map(|i| format!("word{i} ")).collect(), None),
+        Scenario::Markdown => (
+            MARKDOWN_REPLY
+                .split_inclusive('\n')
+                .map(|l| l.to_string())
+                .collect(),
+            None,
+        ),
     }
 }
 
@@ -158,6 +172,7 @@ mod tests {
         assert_eq!(Scenario::parse(" command "), Some(Scenario::Command));
         assert_eq!(Scenario::parse("question"), Some(Scenario::Question));
         assert_eq!(Scenario::parse("long"), Some(Scenario::Long));
+        assert_eq!(Scenario::parse("markdown"), Some(Scenario::Markdown));
         assert_eq!(Scenario::parse("nope"), None);
     }
 
@@ -177,6 +192,7 @@ mod tests {
             Scenario::Command,
             Scenario::Question,
             Scenario::Long,
+            Scenario::Markdown,
         ] {
             let (deltas, calls) = plan_reply(s, &[msg("user"), msg("assistant"), msg("tool")]);
             assert_eq!(deltas.concat(), "Task Complete");

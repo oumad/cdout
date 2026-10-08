@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExplorerState {
     pub path: String,
     pub selected_files: Vec<String>,

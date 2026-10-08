@@ -1,0 +1,4 @@
+# Written by egui_kittest when a comparison fails; never commit them.
+*.diff.png
+*.new.png
+*.old.png
