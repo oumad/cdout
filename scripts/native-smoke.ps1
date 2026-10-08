@@ -49,6 +49,7 @@ public static class Smoke {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
   public struct RECT { public int L, T, R, B; }
@@ -57,7 +58,9 @@ public static class Smoke {
     var list = new List<Win>();
     EnumWindows((h, l) => {
       uint p; GetWindowThreadProcessId(h, out p);
-      if (p == pid) {
+      var cls = new StringBuilder(64); GetClassNameW(h, cls, 64);
+      // The debug build's console window belongs to us too; it isn't UI.
+      if (p == pid && cls.ToString() != "ConsoleWindowClass") {
         RECT r; GetWindowRect(h, out r);
         list.Add(new Win { H = h, Visible = IsWindowVisible(h), L = r.L, T = r.T, W = r.R - r.L, Hgt = r.B - r.T });
       }
@@ -66,6 +69,7 @@ public static class Smoke {
     return list;
   }
   public static void Key(byte vk, bool up) { keybd_event(vk, 0, up ? 2u : 0u, UIntPtr.Zero); }
+  public static uint ForegroundPid() { uint p; GetWindowThreadProcessId(GetForegroundWindow(), out p); return p; }
 }
 "@
 [void][Smoke]::SetProcessDPIAware()
@@ -111,7 +115,20 @@ function Send-Chord {
     foreach ($vk in 0x78, 0x10, 0x12, 0x11) { [Smoke]::Key($vk, $true) }
 }
 
-function Send-Escape { [Smoke]::Key(0x1B, $false); Start-Sleep -Milliseconds 40; [Smoke]::Key(0x1B, $true) }
+# Keystrokes go to whatever has focus. Refuse to send any unless a cdout
+# window owns the foreground, so a focus failure can never type into another
+# application on the tester's desktop.
+function Ours-Foreground([string]$what) {
+    $fg = [Smoke]::ForegroundPid()
+    if ($fg -eq $script:proc.Id) { return $true }
+    Fail "$what skipped: keyboard focus is in another process (pid $fg), not cdout"
+    return $false
+}
+
+function Send-Escape {
+    if (-not (Ours-Foreground "Escape")) { return }
+    [Smoke]::Key(0x1B, $false); Start-Sleep -Milliseconds 40; [Smoke]::Key(0x1B, $true)
+}
 
 function Visible-Windows {
     @([Smoke]::Windows([uint32]$script:proc.Id) | Where-Object { $_.Visible -and $_.W -gt 100 -and $_.Hgt -gt 100 })
@@ -214,8 +231,13 @@ function Stop-App($data) {
 }
 
 function Type-Text([string]$text) {
+    if (-not (Ours-Foreground "typing '$text'")) { return }
     [System.Windows.Forms.SendKeys]::SendWait($text)
     Start-Sleep -Milliseconds 150
+}
+
+function Describe-Windows {
+    (Visible-Windows | ForEach-Object { "$($_.W)x$($_.Hgt) at $($_.L),$($_.T)" }) -join "; "
 }
 
 # Common opening: app up, hotkey works, Escape hides, submit a prompt.
@@ -228,7 +250,8 @@ function Open-Spotlight-And-Submit([string]$scenario, [string]$prompt) {
 
     Send-Chord
     if (-not (Expect "spotlight\.shown" "hotkey shows the spotlight" 3000)) { return $false }
-    Start-Sleep -Milliseconds 600
+    if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus" 2000)) { return $false }
+    Start-Sleep -Milliseconds 300
     $sp = Spotlight-Window
     if ($sp) { Pass "spotlight window visible ($($sp.W)x$($sp.Hgt))" } else { Fail "spotlight window not visible" }
     Snap "$scenario-1-spotlight.png" $sp
@@ -255,7 +278,8 @@ function Open-Spotlight-And-Submit([string]$scenario, [string]$prompt) {
 
     Send-Chord
     if (-not (Expect "spotlight\.shown" "hotkey shows it again" 3000)) { return $false }
-    Start-Sleep -Milliseconds 700
+    if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus again" 2000)) { return $false }
+    Start-Sleep -Milliseconds 300
     Type-Text $prompt
     Snap "$scenario-2-typed.png" (Spotlight-Window)
     Type-Text "{ENTER}"
@@ -330,10 +354,11 @@ function Scenario-Hidden {
         Click-Element "Close" "click the title bar's Close" | Out-Null
         Expect "main\.hidden" "Close hides the main window to the tray" 3000 | Out-Null
         Start-Sleep -Milliseconds 600
-        if (Visible-Windows) { Fail "a window is still visible after Close" } else { Pass "no window visible" }
+        if (Visible-Windows) { Fail "a window is still visible after Close: $(Describe-Windows)" } else { Pass "no window visible" }
         Send-Chord
         if (-not (Expect "spotlight\.shown" "hotkey works with every window hidden" 3000)) { return }
-        Start-Sleep -Milliseconds 700
+        if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus" 2000)) { return }
+        Start-Sleep -Milliseconds 300
         Type-Text "from the tray"
         Type-Text "{ENTER}"
         Expect "spotlight\.submitted" "submit from the spotlight" | Out-Null

@@ -28,6 +28,8 @@ use crate::{hotkey, platform, tray, ui};
 pub const MAIN_SIZE: [f32; 2] = [1100.0, 760.0];
 pub const MAIN_MIN_SIZE: [f32; 2] = [900.0, 600.0];
 pub const SPOTLIGHT_TITLE: &str = "cdout spotlight";
+/// How long to keep retrying keyboard focus after showing the spotlight.
+const SPOTLIGHT_FOCUS_RETRY: std::time::Duration = std::time::Duration::from_millis(1500);
 
 pub fn spotlight_viewport_id() -> ViewportId {
     ViewportId::from_hash_of("cdout-spotlight")
@@ -95,6 +97,10 @@ pub struct Shared {
     pub md_cache: CommonMarkCache,
     last_spotlight_focus: Option<bool>,
     spotlight_configured: bool,
+    /// Until this instant, keep asking the OS to focus the spotlight. Windows
+    /// can refuse a single activation request (foreground lock), and an
+    /// unfocused palette sends the user's typing to the previous app.
+    spotlight_focus_until: Option<Instant>,
 }
 
 impl Shared {
@@ -142,6 +148,7 @@ impl Shared {
                 ctx.send_viewport_cmd_to(spot, ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd_to(spot, ViewportCommand::Focus);
                 ctx.request_repaint_of(spot);
+                self.spotlight_focus_until = Some(Instant::now() + SPOTLIGHT_FOCUS_RETRY);
                 if !self.spotlight_configured {
                     self.spotlight_configured =
                         platform::configure_spotlight_window(SPOTLIGHT_TITLE);
@@ -149,6 +156,7 @@ impl Shared {
                 tracing::info!(target: "cdout", "spotlight.shown");
             }
             Effect::HideSpotlight(reason) => {
+                self.spotlight_focus_until = None;
                 ctx.send_viewport_cmd_to(spot, ViewportCommand::Visible(false));
                 tracing::info!(target: "cdout", "spotlight.hidden reason={}", reason.as_str());
             }
@@ -247,6 +255,7 @@ impl CdoutApp {
             md_cache: CommonMarkCache::default(),
             last_spotlight_focus: None,
             spotlight_configured: false,
+            spotlight_focus_until: None,
         };
 
         match hotkey::init() {
@@ -303,6 +312,17 @@ fn spotlight_pass(ui: &mut egui::Ui, shared: &Mutex<Shared>) {
         sh.dispatch(&ctx, Msg::SpotlightHide(HideReason::Escape));
     }
     let focused = ctx.input(|i| i.viewport().focused);
+    if let Some(until) = sh.spotlight_focus_until {
+        if focused == Some(true) {
+            sh.spotlight_focus_until = None;
+        } else if Instant::now() < until {
+            ctx.send_viewport_cmd(ViewportCommand::Focus);
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        } else {
+            sh.spotlight_focus_until = None;
+            tracing::warn!(target: "cdout", "spotlight.focus_failed");
+        }
+    }
     if focused != sh.last_spotlight_focus {
         sh.last_spotlight_focus = focused;
         if let Some(f) = focused {

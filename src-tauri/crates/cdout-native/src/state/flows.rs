@@ -69,6 +69,7 @@ impl AppState {
 
     pub(super) fn on_spotlight_focus(&mut self, focused: bool, now: Instant, fx: &mut Vec<Effect>) {
         if focused {
+            tracing::info!(target: "cdout", "spotlight.focused");
             self.spotlight.shown_at = Some(now);
             self.spotlight.focus_input = true;
             fx.push(Effect::FetchExplorer(ExplorerPurpose::Spotlight));
