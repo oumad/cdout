@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Apple Events (Finder introspection) is the only entitlement the native app
+  needs. Unlike the Tauri app there is no WebKit, so no JIT entitlement.
+  No App Sandbox: cdout runs the user's approved commands on their files.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+</dict>
+</plist>

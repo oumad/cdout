@@ -142,3 +142,71 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.ref_name }}" "$env:PORTABLE_ZIP" --clobber
+
+  # The native (egui) app, shipped alongside the Tauri build until it
+  # replaces it. Runs after `release` so the draft release already exists.
+  native:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          key: ${{ matrix.os }}-native
+
+      # No Node step: `-p cdout-native` never compiles the Tauri crate.
+
+      - name: Build and zip (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Push-Location src-tauri
+          cargo build -p cdout-native --release
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+          Pop-Location
+          $version = (Select-String -Path "src-tauri/crates/cdout-native/Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $stage = "native-stage/cdout"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "src-tauri/target/release/cdout-native.exe" -Destination "$stage/cdout.exe"
+          @"
+          cdout $version (native preview)
+
+          Run cdout.exe. No installation and no WebView2 required.
+          The global hotkey (default Ctrl+Alt+A) opens the spotlight prompt.
+          Settings, API keys and sessions are shared with the regular cdout
+          app and live in %APPDATA%\cdout. Logs: %APPDATA%\cdout\logs.
+          "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
+          $zip = "cdout-native-$version-windows-x64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          "NATIVE_ASSET=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build app bundle and DMG (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          bash scripts/package-macos.sh
+          echo "NATIVE_ASSET=$(ls dist-native/*.dmg)" >> "$GITHUB_ENV"
+
+      - name: Upload to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "$NATIVE_ASSET" --clobber
+
+      - name: Keep the build as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdout-native-${{ matrix.os }}
+          path: ${{ env.NATIVE_ASSET }}

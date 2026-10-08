@@ -41,3 +41,5 @@ proton-io
 
 # openclaw
 openclaw
+# Native app packaging output (scripts/package-macos.sh)
+dist-native/
