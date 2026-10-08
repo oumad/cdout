@@ -71,6 +71,11 @@ pub async fn route_chat_stream(
     // covered without each having to remember.
     let history = Message::strip_synthetic_for_api(&history);
 
+    #[cfg(feature = "fake-llm")]
+    if let Some(scenario) = super::fake::scenario() {
+        return super::fake::chat_stream(scenario, &history, on_chunk).await;
+    }
+
     // Streaming calls are NOT retried: the callback may already have emitted
     // partial text, so a wholesale re-send would duplicate output. Transient
     // failures surface as an error; context-window overflow is recovered by

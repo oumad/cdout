@@ -60,13 +60,13 @@ jobs:
         run: npm test
 
       - name: Backend tests
-        run: cargo test --lib
+        run: cargo test --workspace --lib
         working-directory: ./src-tauri
 
       - name: Clippy
-        run: cargo clippy --lib --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: ./src-tauri
 
       - name: Formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
         working-directory: ./src-tauri

@@ -49,11 +49,7 @@ pub struct Session {
 // --- Storage layout ---
 
 fn sessions_dir() -> Result<PathBuf, String> {
-    let base =
-        dirs::config_dir().ok_or_else(|| "Failed to locate user config directory".to_string())?;
-    let dir = base
-        .join(crate::constants::APP_DATA_DIR_NAME)
-        .join(SESSIONS_DIR_NAME);
+    let dir = crate::utils::paths::app_data_dir().join(SESSIONS_DIR_NAME);
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions directory: {}", e))?;
     Ok(dir)
 }

@@ -2,13 +2,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod clients;
+#[cfg(feature = "fake-llm")]
+pub mod fake;
 pub mod history;
 pub mod http;
 pub mod retry;
 pub mod router;
 pub mod stream_util;
 
-// Streaming types for Tauri Channel
+// Streaming chunks a shell receives through `features::agent::ChunkSink`.
 #[derive(Serialize, Clone)]
 #[serde(tag = "kind")]
 pub enum StreamChunk {

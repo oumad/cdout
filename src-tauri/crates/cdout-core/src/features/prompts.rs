@@ -116,7 +116,6 @@ impl PromptSection for RulesSection {
                 • \"rename these photos\" → ask: date prefix / sequence number / parent folder name\n     \
                 • \"compress these videos\" → ask: format (mp4/mov/webm) and quality (high/medium/low)\n     \
                 • \"clean up this folder\" → ask: delete originals / move to subfolder / archive\n     \
-
              - Do NOT ask for trivial confirmations (\"shall I start?\"). Only ask when the answer changes the command.\n   \
              - Never ask more than ONE question per turn.",
             rule_1,

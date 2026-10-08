@@ -6,6 +6,20 @@ use crate::llm::router;
 use crate::llm::{Message, StreamChunk};
 use crate::tools::{self, ToolRegistry};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// Where a streaming agent step sends its chunks. The Tauri shell forwards
+/// them over an IPC channel; the native shell posts them to its UI thread.
+/// Any `Fn(StreamChunk)` closure is a sink.
+pub trait ChunkSink: Send + Sync {
+    fn send(&self, chunk: StreamChunk);
+}
+
+impl<F: Fn(StreamChunk) + Send + Sync> ChunkSink for F {
+    fn send(&self, chunk: StreamChunk) {
+        self(chunk)
+    }
+}
 
 /// How many times to attempt history recovery (trim + retry) before bailing.
 const MAX_CONTEXT_RECOVERY_ATTEMPTS: usize = 2;
@@ -301,13 +315,13 @@ async fn call_stream_with_context_recovery(
     model: &str,
     current_context: &mut Vec<Message>,
     tool_defs: &[crate::llm::ToolDefinition],
-    channel: &tauri::ipc::Channel<StreamChunk>,
+    sink: &Arc<dyn ChunkSink>,
 ) -> Result<Message, String> {
     let mut recovery_attempts = 0;
     loop {
-        let ch = channel.clone();
+        let sink = Arc::clone(sink);
         let on_chunk = move |text: String| {
-            let _ = ch.send(StreamChunk::TextDelta { text });
+            sink.send(StreamChunk::TextDelta { text });
         };
         match router::route_chat_stream(
             model,
@@ -343,7 +357,7 @@ async fn call_stream_with_context_recovery(
 
 // --- Public API ---
 
-/// Streaming agent step — sends text deltas and Done event via Tauri channel.
+/// Streaming agent step — sends text deltas, then `Done` or `Error`, to `sink`.
 ///
 /// `drop_tools` is set by the frontend when the previous turn's loop_verdict
 /// was `Break`. We honour it by sending an empty tool-defs list, forcing the
@@ -352,7 +366,7 @@ pub async fn run_agent_step_stream(
     model: String,
     history: Vec<Message>,
     drop_tools: bool,
-    channel: tauri::ipc::Channel<StreamChunk>,
+    sink: Arc<dyn ChunkSink>,
 ) -> Result<AgentStepResult, String> {
     let registry = tools::build_default_registry();
     let tool_defs = if drop_tools {
@@ -363,19 +377,19 @@ pub async fn run_agent_step_stream(
     let mut current_context = history;
 
     let response_msg =
-        match call_stream_with_context_recovery(&model, &mut current_context, &tool_defs, &channel)
+        match call_stream_with_context_recovery(&model, &mut current_context, &tool_defs, &sink)
             .await
         {
             Ok(msg) => msg,
             Err(e) => {
-                let _ = channel.send(StreamChunk::Error { error: e.clone() });
+                sink.send(StreamChunk::Error { error: e.clone() });
                 return Err(e);
             }
         };
 
     let result = process_response(&response_msg, &registry, &mut current_context);
     if let Some(last) = result.updated_history.last() {
-        let _ = channel.send(StreamChunk::Done {
+        sink.send(StreamChunk::Done {
             message: last.clone(),
         });
     }

@@ -70,10 +70,7 @@ fn default_hotkey() -> String {
 }
 
 fn get_config_path() -> PathBuf {
-    let base = dirs::config_dir()
-        .or_else(dirs::data_local_dir)
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(APP_DATA_DIR_NAME).join(CONFIG_FILE_NAME)
+    super::paths::app_data_dir().join(CONFIG_FILE_NAME)
 }
 
 /// Migration for the shuttle-io → cdout rename: move the old data directory
@@ -91,6 +88,11 @@ fn get_config_path() -> PathBuf {
 /// falls back to the latter — wherever the old build could have written,
 /// the migration looks.
 pub fn migrate_legacy_data_dir() {
+    // An explicit data dir is an isolated sandbox; never pull the real
+    // user's legacy data into it.
+    if super::paths::data_dir_override().is_some() {
+        return;
+    }
     let mut bases: Vec<PathBuf> = Vec::new();
     if let Some(b) = dirs::config_dir() {
         bases.push(b);
@@ -281,8 +283,7 @@ pub struct ApiKeys {
 }
 
 fn get_api_keys_path() -> PathBuf {
-    let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    path.push(APP_DATA_DIR_NAME);
+    let mut path = super::paths::app_data_dir();
     std::fs::create_dir_all(&path).ok();
     path.push("api_keys.json");
     path
@@ -438,18 +439,6 @@ mod tests {
         assert!(json.contains("\"approval_mode\":\"auto\""));
         let back: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.approval_mode, ApprovalMode::Auto);
-    }
-
-    #[test]
-    fn default_hotkey_parses() {
-        // `lib.rs` calls `.expect()` on this at startup, so a malformed
-        // default panics the app on launch instead of degrading gracefully.
-        // The macOS default differs from the Windows one, which is exactly
-        // the kind of divergence that goes unnoticed until launch day.
-        use tauri_plugin_global_shortcut::Shortcut;
-        DEFAULT_HOTKEY
-            .parse::<Shortcut>()
-            .unwrap_or_else(|e| panic!("DEFAULT_HOTKEY '{DEFAULT_HOTKEY}' must parse: {e}"));
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub trait Tool: Send + Sync {
 }
 
 /// Registry that holds all available tools and provides lookup/dispatch.
+#[derive(Default)]
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
 }
