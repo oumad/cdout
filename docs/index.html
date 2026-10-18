@@ -737,13 +737,12 @@ html.js .rev.in{opacity:1;transform:none}
           <span class="traffic" style="display:inline-flex"><i class="r" style="width:9px;height:9px;border-radius:50%;background:#f0564a;display:block"></i></span>
           build from source
         </div>
-<pre><span class="c"># clone and run — Tauri v2 + React 19 + Rust</span>
+<pre><span class="c"># clone and run — pure Rust, no Node or webview</span>
 git clone https://github.com/oumad/cdout
 <span class="p">cd</span> cdout
 
-npm install
-npm run tauri <span class="hl">dev</span>     <span class="c"># hot-reload dev build</span>
-npm run tauri <span class="hl">build</span>   <span class="c"># installers → src-tauri/target</span>
+cargo <span class="hl">run</span>              <span class="c"># debug build, launches the app</span>
+cargo <span class="hl">build</span> --release  <span class="c"># target/release/cdout(.exe)</span>
 
 <span class="c"># cut a release: tag it, CI does the rest</span>
 git tag <span class="hl">v0.1.0</span> && git push origin <span class="hl">v0.1.0</span></pre>
@@ -769,7 +768,7 @@ git tag <span class="hl">v0.1.0</span> && git push origin <span class="hl">v0.1.
     <a href="https://github.com/oumad/cdout">GitHub</a>
     <a href="https://github.com/oumad/cdout/releases">Releases</a>
     <span>MIT licensed</span>
-    <span class="built">Tauri · React · Rust</span>
+    <span class="built">Rust · egui</span>
   </div>
 </footer>
 

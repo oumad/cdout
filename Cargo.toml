@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/*"]
+# `cargo run` / `cargo build` at the root mean the app. Tests and clippy use
+# `--workspace` so cdout-core is covered too.
+default-members = ["crates/cdout"]
+resolver = "2"
+
+# The one place the version is bumped: both crates inherit it, and the
+# release workflow and scripts/package-macos.sh read it from here.
+[workspace.package]
+version = "0.3.1"

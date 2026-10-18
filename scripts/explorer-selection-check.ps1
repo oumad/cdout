@@ -27,15 +27,14 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $AE = [System.Windows.Automation.AutomationElement]
 $repo = Split-Path -Parent $PSScriptRoot
-$tauriDir = Join-Path $repo "src-tauri"
-$probe = Join-Path $tauriDir "target\debug\examples\explorer_probe.exe"
+$probe = Join-Path $repo "target\debug\examples\explorer_probe.exe"
 
 $script:failures = @()
 function Pass($m) { Write-Host "  ok: $m" -ForegroundColor Green }
 function Fail($m) { Write-Host "  FAIL: $m" -ForegroundColor Red; $script:failures += $m }
 
 if (-not $NoBuild) {
-    Push-Location $tauriDir
+    Push-Location $repo
     try {
         cargo build -q -p cdout-core --example explorer_probe
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }

@@ -4,9 +4,10 @@ A native desktop AI assistant for **Windows and macOS**. Press a global hotkey,
 type "rename my photos by date" while files are selected in Explorer (or
 Finder), and an LLM proposes a shell command for one-click approval.
 
-Built with **Tauri v2 + React 19 + Rust**. Two windows: a small spotlight (600×260,
-hotkey-triggered) and a main conversation window (collapsible sessions sidebar
-on the left, like Claude.ai).
+Pure Rust, drawn with [egui](https://github.com/emilk/egui): no webview, no
+Node, one binary. Two windows: a small hotkey-triggered spotlight card and a
+main conversation window (collapsible sessions sidebar on the left, like
+Claude.ai).
 
 | | Windows | macOS |
 |---|---|---|
@@ -18,7 +19,7 @@ on the left, like Claude.ai).
 The shell is not abstracted behind a lowest-common-denominator wrapper — the
 system prompt, the tool name, and the script templates all change with the
 platform, so the model writes idiomatic PowerShell on Windows and idiomatic
-zsh on macOS. See `src-tauri/src/platform.rs`.
+zsh on macOS. See `crates/cdout-core/src/platform.rs`.
 
 ---
 
@@ -40,17 +41,23 @@ happens to suit you, help yourself.
 
 ## Quick start
 
+### Download
+
+Prebuilt binaries are on the [releases page](https://github.com/oumad/cdout/releases/latest):
+a zip with `cdout.exe` for Windows, a universal DMG for macOS. Nothing to
+install; the app lives in the tray / menu bar.
+
 ### Run from source
 
 ```sh
 # from repo root
-npm install
-npm run tauri dev
+cargo run             # debug build
+cargo run --release   # optimized; the binary is target/release/cdout(.exe)
 ```
 
-Prerequisites: Node 20+, a stable Rust toolchain, and the platform's native
-webview toolchain — Visual Studio Build Tools + WebView2 on Windows, Xcode
-Command Line Tools (`xcode-select --install`) on macOS.
+Prerequisites: a stable Rust toolchain and the platform's C toolchain for the
+linker — Visual Studio Build Tools (Desktop C++) on Windows, Xcode Command
+Line Tools (`xcode-select --install`) on macOS.
 
 **macOS, first launch:** cdout asks for permission to control Finder. That
 prompt is how it reads your open folder and selected files; deny it and the
@@ -62,14 +69,12 @@ three of the four.
 ### Run the test suites
 
 ```sh
-# backend (Rust)
-cd src-tauri
-cargo test --lib
-
-# frontend (TypeScript / React)
-cd ..
-npm test
+cargo test --workspace
 ```
+
+That covers the core's unit tests and the app's state-machine tests, headless
+screen tests and glyph coverage. The scripts that drive the real binary are
+under [Testing](#testing).
 
 ### Configure providers
 
@@ -116,7 +121,7 @@ After first launch:
   with escalation Warning → Block → Break. Block pauses auto-execute; Break
   also drops tool definitions from the next request so the model is forced
   into a text-only reassessment.
-- **Skills** — `*.md` files in `src-tauri/skills/` (bundled) or
+- **Skills** — `*.md` files in `skills/` (bundled, compiled into the binary) or
   `<app data>/cdout/skills/` (user) get injected into the system prompt.
   Availability is probed against the real PATH — on macOS through a login
   shell, since a bundled `.app` otherwise cannot see Homebrew.
@@ -127,11 +132,18 @@ After first launch:
 
 ## Architecture
 
-### Backend (Rust — `src-tauri/src/`)
+Two crates in one Cargo workspace:
+
+| Crate | What |
+|---|---|
+| `crates/cdout-core` | Everything that is not a pixel: agent loop, LLM clients, tools, approval policy, sessions, skills, config, file-manager bridges. No UI framework anywhere in it. |
+| `crates/cdout` | The app: windows, tray, hotkey and the screens. Talks to the core through plain functions (`cdout_core::api`) and one streaming trait (`ChunkSink`). |
+
+### Core (`crates/cdout-core/src/`)
 
 | File | Purpose |
 |------|---------|
-| `lib.rs` | Tauri command registration, tray, global shortcut, window lifecycle |
+| `api.rs` | The entry points the app calls: models and provider status, keys (masked on the way out), skills, session creation, `run_agent_step`, `execute_shell_command` |
 | `constants.rs` | Backend tunables (`MAX_OUTPUT_LEN`, `TOOL_NAME`, `COMPLETION_KEYWORDS`) |
 | `llm/router.rs` | Three-branch dispatch: `ollama:*` → ollama, `anthropic:*` → direct Anthropic, else → OpenRouter |
 | `llm/retry.rs` | Error classifier (`BusinessQuota` / `ContextWindowExceeded` / `EmptyCompletion` / `TransientRetryable` / `Terminal`) + retry wrapper with exp backoff + jitter |
@@ -141,74 +153,58 @@ After first launch:
 | `llm/clients/ollama.rs` | Local Ollama client (streaming, NDJSON) |
 | `llm/clients/anthropic.rs` | Direct Anthropic API-key client (prompt caching + `compact-2026-01-12` beta for 4.6+ models) |
 | `llm/clients/openrouter.rs` | OpenAI-compatible OpenRouter client. Pins `allow_fallbacks: false`, `quantizations: ["fp8","bf16","fp16"]`, `data_collection: "deny"` on every request |
-| `features/agent.rs` | Agent loop, tool-proposal extraction (native `tool_calls` first, code-block + raw-text fallbacks), context-overflow recovery |
+| `llm/fake.rs` | Scripted model behind the `fake-llm` feature; what the end-to-end smoke test talks to |
+| `features/agent.rs` | Agent loop, tool-proposal extraction (native `tool_calls` first, code-block + raw-text fallbacks), context-overflow recovery, the `ChunkSink` streaming trait |
 | `features/loop_detector.rs` | Process-wide singleton. Three patterns + four-state escalation. Pattern-keyed `warning_seen` so no-progress can reach Block/Break |
 | `features/prompts.rs` | `PromptSection` trait, `sends_native_tool_specs` flag (`false` for `ollama:*` to get the longer prose tool catalog) |
-| `features/skills.rs` | YAML-frontmatter `.md` loader, safety scanner with quarantine, `LoadedSkills { skills, quarantined }` return type |
-| `features/sessions.rs` | Per-session JSON files in the app data dir |
+| `features/skills.rs` | YAML-frontmatter `.md` loader, safety scanner with quarantine, bundled skills embedded with `include_dir!` |
+| `features/sessions.rs` | Per-session JSON files in the app data dir: list, load, save (atomic), rename, delete |
 | `features/explorer/mod.rs` | Shared `ExplorerState` + per-OS dispatch |
-| `features/explorer/windows.rs` | Windows COM bridge to active Explorer window (`IShellWindows`) |
+| `features/explorer/windows.rs` | Windows COM bridge: finds Explorer windows with `EnumWindows`, picks the active tab by z-order (window titles of background windows are stale), reads its selection |
 | `features/explorer/macos.rs` | Finder bridge via AppleScript (front window target + selection), with TCC-denial diagnosis |
 | `platform.rs` | The only `cfg`-heavy file: shell invocation, process-group kill, binary detection, and the `ShellSpec` that feeds every shell-specific line of the system prompt |
 | `tools/mod.rs` | `Tool` trait, `ToolRegistry`, `validate_and_execute`, cross-platform shell-tool aliases |
 | `tools/shell.rs` | The shell exec tool (PowerShell / zsh). Tracks PID for kill, truncates output, and forwards error-shaped stderr even when the command exits 0 |
 | `tools/risk.rs` | Allowlist command classifier (`ReadOnly` / `Mutating` / `Dangerous`) behind the approval policy |
 | `tools/ask_user_question.rs` | The multi-choice clarification tool (validated client-side, never executed server-side) |
-| `utils/config.rs` | `AppConfig` + `ApiKeys` (`{openrouter, anthropic}`) persistence |
+| `utils/config.rs` | `AppConfig` + `ApiKeys` (`{openrouter, anthropic}`) persistence, hotkey and approval-mode accessors |
+| `utils/paths.rs` | The app data dir (`CDOUT_DATA_DIR` overrides it, which is how tests get an isolated run) |
 | `utils/cancel.rs` | Global `OnceLock<AtomicBool>` cancel flag (single concurrent loop by design) |
 
-### Frontend (TypeScript / React — `src/`)
+### App (`crates/cdout/src/`)
 
 | File / dir | Purpose |
 |------------|---------|
-| `App.tsx` | `SpotlightApp` + `MainApp`, routed by `getCurrentWindow().label` |
-| `types/index.ts` | All cross-IPC types |
-| `constants.ts` | Tauri command names, event names, magic numbers |
-| `utils/tauri.ts` | Typed wrappers around every `invoke()` call (no raw invokes in components) |
-| `utils/agent.ts` | `isTaskComplete` text-pattern check |
-| `hooks/useModels.ts` | Model list reconciliation. On stale-slug detection, prefers `anthropic/*` → `openai/*` → `google/*` → `ollama:*` and toasts the swap |
-| `hooks/useExplorer.ts` | File-manager state sync |
-| `hooks/usePlatform.ts` | Host-OS labels + shell tool name, fetched from the backend so UI copy and the system prompt agree |
-| `hooks/useError.ts` | Auto-dismissing error toast state |
-| `hooks/useSessions.ts` | Session CRUD + debounced auto-save (500ms) |
-| `components/SessionsSidebar.tsx` | Collapsible left sidebar with "New chat", session list, rename, delete |
-| `components/ChatMessage.tsx` | Renders user / assistant / tool messages. Renders `synthetic: true` messages as a "cdout internal" gray note (not as user input) |
-| `components/CommandApproval.tsx` | Editable command proposal with Approve / Approve-all / Reject-with-feedback / Dismiss |
-| `components/QuestionApproval.tsx` | Radio/checkbox UI for `ask_user_question` with an "Other (free text)" fallback |
-| `components/ModelSelector.tsx` | Provider-grouped `<optgroup>` (`Local (Ollama)` / `Anthropic (direct · cached)` / `OpenRouter`) |
-| `components/MigrationBanner.tsx` | One-shot banner shown when legacy CLI/Antigravity/openai/gemini creds are detected. "Clean up legacy creds" button calls `cleanup_legacy_credentials` |
-| `components/SettingsPage.tsx` | OpenRouter + Anthropic key fields (masked previews, never plaintext to renderer state), Ollama URL, free-tier toggle, quarantined-skill viewer, Diagnostics tab |
-| `components/HotkeyRecorder.tsx` | Shows the current hotkey as keycaps and records a new chord. Canonicalises before comparing, so re-pressing the same combination in a different modifier order is not treated as a change |
-| `components/FileAccessDiagnostics.tsx` | Explains why file context is empty. Distinguishes "permission denied" from "no window open", and deep-links the macOS Automation pane |
+| `state/` | The pure state machine: `AppState::update(Msg, now) -> Vec<Effect>`. Every branch of the UI logic lives here, with no I/O and injected time, so it is unit-tested directly (`state/tests.rs`) |
+| `dispatch.rs` | Executes effects: async work on a tokio runtime, file I/O on a serial thread; results come back as messages. A generation counter drops results from a cancelled step |
+| `app.rs` | The eframe `App`: message pump, main window (root viewport), spotlight (child viewport), focus and centring |
+| `ui/` | Screens as functions of the state: spotlight, chat transcript (streaming markdown), command approval with risk badges, question picker, sidebar, settings, onboarding, title bar. `icons.rs` paints the icons the bundled fonts lack |
+| `platform/` | The `cfg`-split window code: monitor under the cursor, activation, macOS menu-bar app behaviour |
+| `hotkey.rs`, `tray.rs`, `fonts.rs` | Global shortcut (same chord syntax as the config), tray / menu-bar icon, system-font fallback |
+| `crash.rs`, `logging.rs` | Panic hook that logs and relaunches the app (rate-limited, with the spotlight draft restored); file + stderr logging to `<app data>/logs/cdout.log` |
 
 ### Data flow — one agent turn
 
 ```
-SpotlightApp                  Backend                        MainApp
-─────────────                ─────────                       ────────
-User types prompt
-clicks Enter ───spotlight_submit──▶ persists prompt + model
-                                    emits SPOTLIGHT_SUBMITTED ▶ listener:
-                                                                  1) flush prior save
-                                                                  2) hardResetSessionUi (cancel stream, clear UI)
-                                                                  3) newSession (creates + loads)
-                                                                  4) runAgentStep
-                                                                ◀ run_agent_step_stream
-                                    router::route_chat_stream
-                                    classifier wraps errors
-                                    LoopDetector records proposal
-                                    AgentStepResult ───────────▶ frontend renders
-                                                                  proposal → CommandApproval
-                                                                  question → QuestionApproval
-                                                                  text     → ChatMessage
-
-                                                                User approves command
-                                                            ──execute_shell_command──▶ PowerShell / zsh, capture
-                                                                                        output, record outcome
-                                                                                        in LoopDetector
-                                                                ◀── tool_result
-                                                                runAgentStep (next turn)
-                                                                ...
+ui                       state machine                    dispatcher / core
+──                       ─────────────                    ─────────────────
+Enter in the spotlight ─▶ Msg::SpotlightSubmit
+                          ├─ Effect::CreateSession ─────▶ api::create_session
+                          ├─ Effect::ResetLoopDetector
+                          └─ Effect::RunStep ───────────▶ api::run_agent_step (streams)
+                                                          │ router → provider client
+                                                          │ classifier wraps errors
+                                                          │ LoopDetector records proposal
+                          Msg::StreamDelta ◀──────────────┤ text as it arrives
+                          Msg::StepDone    ◀──────────────┘ AgentStepResult
+                          ├─ text      → transcript
+                          ├─ question  → question picker
+                          └─ proposal  → approval card, or straight to
+                                          Effect::Execute if the policy allows
+Approve ────────────────▶ Msg::ApproveCommand
+                          └─ Effect::Execute ───────────▶ api::execute_shell_command
+                          Msg::ExecDone    ◀──────────────┘ output, recorded in LoopDetector
+                          └─ Effect::RunStep (next turn) …
 ```
 
 ---
@@ -305,7 +301,7 @@ requires:
 Use `ffmpeg -i input.mp4 -vf scale=1280:720 out.mp4` to resize.
 ```
 
-- **Bundled** skills live in `src-tauri/skills/` and ship with the binary.
+- **Bundled** skills live in `skills/` and are compiled into the binary.
   They are trusted — NOT run through the safety scanner. Treat any PR that
   adds a bundled skill as a security review.
 - **User** skills live in `<app data>\skills\` (`%APPDATA%\cdout\skills\`,
@@ -357,38 +353,33 @@ over. See `config::migrate_legacy_data_dir`.
 
 ---
 
-## Tauri commands (IPC surface)
+## Core API
 
-| Command | Returns | Notes |
-|---------|---------|-------|
-| `get_explorer_status` | `ExplorerState` | Path + selected files of the active Explorer/Finder window |
-| `get_explorer_debug` | `ExplorerDebugInfo` | For diagnosing detection failures. Shape is per-OS; on macOS it reports whether Automation access was granted |
-| `get_platform_info` | `PlatformInfo` | OS key/name, file-manager name, shell name, shell tool name, file-list read hint |
-| `get_approval_mode` / `set_approval_mode` | `ApprovalMode` | `ask` / `read_only` / `auto`, persisted. Written immediately on change, not on Settings-Save |
-| `classify_command` | `CommandRisk` | `read_only` / `mutating` / `dangerous` for one command |
-| `open_file_access_settings` | | macOS: deep-links System Settings → Privacy & Security → Automation. Errors on Windows, which has no grant to give |
-| `get_ollama_models` | `Vec<String>` | All available model slugs, prefixed by provider |
-| `get_ollama_url` / `set_ollama_url` | | |
-| `get_selected_model` / `set_selected_model` | | |
-| `set_openrouter_key` | | Plaintext input, server-side stored |
-| `set_anthropic_key` | | |
-| `get_api_keys` | `MaskedApiKeys` | `{ openrouter_set, openrouter_preview, anthropic_set, anthropic_preview }` — preview = last 4 chars |
-| `get_show_free_openrouter_models` / `set_show_free_openrouter_models` | | Free tier hidden by default (FP4 quantization risk) |
-| `get_openrouter_disclosure_ack` / `set_openrouter_disclosure_ack` | | One-shot migration banner ack |
-| `has_legacy_credentials` | `bool` | Detects + auto-purges legacy `openai`/`gemini` fields from `api_keys.json` |
-| `cleanup_legacy_credentials` | | Removes cdout's antigravity creds always; third-party CLI files only when `removeThirdParty: true` |
-| `get_hotkey` | `String` | The currently registered chord |
-| `set_hotkey` | | Re-registers with the OS **first**, and only writes to disk once that succeeds — so a chord another app owns cannot become the value loaded at next launch. Takes effect immediately, no restart |
-| `init_agent_conversation` | `Vec<Message>` | Builds the system + initial user message. Takes optional `model` to switch native-tool-specs flag |
-| `list_sessions` | `Vec<SessionMeta>` | Sidebar list, sorted by `last_active_at` desc |
-| `load_session` / `create_session` / `save_session_messages` / `delete_session` / `rename_session` | | Session CRUD |
-| `list_skills` | `{ skills, quarantined }` | |
-| `run_agent_step` (sync) / `run_agent_step_stream` | `AgentStepResult` | Stream takes optional `drop_tools: bool` to honour `Break` verdict |
-| `execute_shell_command` | `String` | Runs the proposed command in the platform shell. Records outcome in `LoopDetector` |
-| `reset_loop_detector` | | Called on "New chat" and on spotlight resubmit |
-| `cancel_stream` / `get_running_command` / `kill_running_command` | | Cancellation, process tracking, kill |
-| `write_file_list` | `String` | Spills large file lists to a temp file the LLM can read (`Get-Content` / `read -r`) |
-| `spotlight_submit` | | Spotlight → main window handshake. Carries `autoApprove` when submitted with the modifier held |
+The app does not reach into the core's modules for behaviour; it calls
+`cdout_core::api`:
+
+| Function | Notes |
+|----------|-------|
+| `platform_info` | OS key/name, file-manager name, shell name, shell tool name, file-list read hint |
+| `available_models` | Every usable model slug, prefixed by provider |
+| `provider_status` | Whether Ollama answers and which keys are set; drives first-run onboarding |
+| `set_ollama_url`, `set_openrouter_key`, `set_anthropic_key` | Plaintext in, stored on disk. `masked_api_keys` is the only way back out (set flag + last 4 chars) |
+| `has_legacy_credentials`, `cleanup_legacy_credentials` | Detect and remove credential layouts from older versions |
+| `list_skills` | Loaded skills plus the quarantined ones with their hits |
+| `init_agent_conversation` | System prompt + first user message. Takes the model, to switch the native-tool-specs flag |
+| `create_session`, `save_session_messages` | Session files. Listing, loading, renaming and deleting are in `features::sessions` |
+| `run_agent_step` | One streaming LLM step; chunks go to a `ChunkSink`. `drop_tools` honours the loop detector's `Break` verdict |
+| `execute_shell_command` | Runs an approved command in the platform shell and records the outcome in the `LoopDetector` |
+| `write_file_list` | Spills large file lists to a temp file the model reads with `Get-Content` / `read -r` |
+| `open_file_access_settings` | macOS: deep-links System Settings → Privacy & Security → Automation. Errors on Windows, which has no grant to give |
+
+Plain settings (hotkey, approval mode, selected model, Ollama URL, free-tier
+toggle) go through `utils::config`; the file-manager bridge through
+`features::explorer`; the command classifier through `tools::risk`;
+cancellation and the kill switch through `utils::cancel` and `tools::shell`.
+`set_hotkey` re-registers with the OS **first** and only writes to disk once
+that succeeds, so a chord another app owns can never become the value loaded
+at next launch.
 
 ---
 
@@ -407,9 +398,12 @@ over. See `config::migrate_legacy_data_dir`.
 
 ## Testing
 
-- Backend: **179 unit tests** at last count (`cargo test --lib`), run on both
-  platforms — the suite is parameterised on `platform::SHELL`, not hardcoded
-  to PowerShell.
+Every layer has a test that runs without a human at the keyboard and reports
+in a form a script (or an agent) can read; that is how the app is developed.
+
+- **Core unit tests** — `cargo test -p cdout-core`, run on both platforms;
+  the suite is parameterised on `platform::SHELL`, not hardcoded to
+  PowerShell.
   - `retry.rs` — every classifier boundary + the cross-bucket guards
   - `history.rs` — UTF-8 char-boundary safety, emergency floor, multi-pass orphan reconciliation, full-ladder happy path
   - `loop_detector.rs` — key-order-independent fingerprint, escalation through Warning/Block/Break for all 3 patterns, no-progress escapes Warning via pattern-keyed warning_seen, window eviction, singleton serialization via `test_lock`
@@ -424,24 +418,42 @@ over. See `config::migrate_legacy_data_dir`.
   - `tools/*.rs` — registry lookup, cross-platform tool-name aliasing, a guard that no tool definition names the other platform's shell, `ask_user_question` validation, shell exec + failure exit codes, and the exit-0-with-errors stderr filter (including its char-boundary safety)
   - `platform.rs` — `{LIST_FILE}` template substitution, binary detection against the real PATH, tool-name/shell agreement
   - `risk.rs` — the allowlist policy from both directions: probes and read-only pipelines pass, writers/loops/unknown commands/backticks/redirection do not, substitution is judged recursively, and destructive patterns outrank a harmless-looking prefix
+  - `features/explorer/windows.rs` — the pure parts of tab resolution: title-prefix matching at word boundaries, topmost-tab selection, `file:///` URL decoding
   - `features/explorer/macos.rs` — AppleScript payload parsing (folder vs file paths, desktop selections, filenames containing newlines), TCC-denial recognition
   - `agent.rs` — tool-proposal extraction, AgentStepResult serialization shape, loop-verdict escalation
 
-- Frontend: **70 vitest tests** (`npm test`).
-  - `agent.test.ts` — `isTaskComplete` patterns
-  - `useError.test.ts` — show/clear/auto-dismiss timing
-  - `useModels.test.ts` — model-list reconciliation + stale-slug swap
-  - `QuestionApproval.test.tsx` — radio + multi-select + custom-answer paths
-  - `ChatMessage.test.tsx` — synthetic vs real-user rendering distinction (the "cdout internal" badge)
-  - `usePlatform.test.ts` — fallback before the backend answers, replacement after, and degradation when the IPC call fails
-  - `FileAccessDiagnostics.test.tsx` — denial vs no-window-open vs working, the deep-link action, and that Windows is never offered a permission fix
-  - `CommandApproval.test.tsx` — the destructive/writes/read-only badges, and that approve-once vs approve-all still differ
-  - `HotkeyRecorder.test.tsx` — chord building and per-platform Meta mapping, refusal of modifier-less chords, Escape-cancels, surfacing an OS refusal without moving state, and canonical equality across modifier order
-  - `ProviderSetup.test.tsx` — both onboarding paths including the remote-Ollama URL (save, trim, unchanged-URL no-op, error surfacing)
+- **App unit tests** — `cargo test -p cdout --lib`: the state machine in
+  `state/tests.rs`, with injected time. Approval policy matrix, auto-steps and
+  their cap, three-failures pause, loop Block/Break, prompts queued while a
+  step runs, stale results from a stopped step, spotlight blur grace and the
+  blur-before-first-focus case, debounced saves, session switching, draft
+  restore after a crash.
 
-Run both via `cargo test --lib && npm test` from project root. CI runs the
-same two suites plus `cargo clippy -D warnings` and `cargo fmt --check` on
-Windows and macOS for every push and PR.
+- **Headless screen tests** — `cargo test -p cdout --tests`: every screen
+  rendered off-screen with `egui_kittest`, queried through its accessibility
+  tree (a test clicks "Approve" and checks what appears) and compared to the
+  pixel snapshots in `crates/cdout/tests/snapshots/`. Regenerate on purpose
+  with `UPDATE_SNAPSHOTS=true`; CI skips the pixel comparison
+  (`CDOUT_SKIP_SNAPSHOTS=1`) because its GPUs render slightly differently.
+  `tests/glyph_coverage.rs` fails if a UI string uses a character the bundled
+  fonts cannot draw — that is why the chrome paints its own icons.
+
+- **End-to-end smoke test** — `scripts/native-smoke.ps1` (Windows): builds
+  the app with the `fake-llm` feature, launches it against a throwaway data
+  dir and a hotkey that cannot clash with an installed cdout, then drives it
+  with real key presses and UI Automation through seven scenarios (text
+  answer, command approval, question, stop/kill, markdown, hidden-window
+  behaviour, crash and relaunch). Every step is checked against the app's log;
+  failures print the log tail. Needs an unlocked desktop session.
+
+- **Explorer detection check** — `scripts/explorer-selection-check.ps1`
+  (Windows): opens a real two-tab Explorer window, switches tabs through UI
+  Automation and asserts the resolver sees the right folder and selection,
+  including the stale-title case. `cargo run -p cdout-core --example
+  explorer_probe -- --json` dumps what the resolver sees right now.
+
+CI runs `cargo test --workspace`, clippy (with and without `fake-llm`) and
+`cargo fmt --check` on Windows and macOS for every push and PR.
 
 ---
 
@@ -478,25 +490,21 @@ always clicks Approve. Point it at a scratch directory only.
 ## Build & ship
 
 ```sh
-# Dev (hot-reload frontend, Rust recompiles on save)
-npm run tauri dev
+# Windows: one exe with the icon embedded, no console window
+cargo build --release            # target/release/cdout.exe
 
-# Release build — NSIS + MSI on Windows, .app + .dmg on macOS
-npm run tauri build
-
-# macOS universal binary (Intel + Apple silicon), as CI ships it
-npm run tauri build -- --target universal-apple-darwin
+# macOS: universal (Intel + Apple silicon) .app and DMG, ad-hoc signed
+scripts/package-macos.sh         # dist/cdout-<version>-universal.dmg
 ```
 
-Output lands in `src-tauri/target/release/bundle/`. Tagging `v*` runs
-`.github/workflows/release.yml`, which builds both platforms into one draft
-release.
+The version lives once, in the root `Cargo.toml` (`[workspace.package]`).
+Tagging `v*` runs `.github/workflows/release.yml`, which builds both
+platforms into one draft release.
 
 macOS builds are unsigned, so Gatekeeper blocks the first launch: right-click
 → **Open**, or `xattr -dr com.apple.quarantine /Applications/cdout.app`.
-Signing and notarizing would need an Apple Developer ID in
-`APPLE_CERTIFICATE` / `APPLE_ID` CI secrets — `entitlements.plist` is already
-in place for it.
+Signing and notarizing would need an Apple Developer ID;
+`crates/cdout/macos/entitlements.plist` is already in place for it.
 
 ---
 
@@ -518,6 +526,13 @@ tools on PATH, and a `.app` launched from Finder inherits only
 seeds the Homebrew prefixes to compensate, so this usually means the tool
 genuinely is not installed — check with `which ffmpeg` in a terminal.
 Settings → Skills lists exactly which binaries are missing.
+
+**The app vanished while I was typing, then came back.** It crashed and
+relaunched itself: the prompt you were typing is restored and a notice says
+so. The panic is in `<app data>/logs/cdout.log`. On Windows the known cause
+is the graphics driver losing the device when another process fills the GPU's
+memory; cdout uses DirectX 12 there, which survives that, and
+`WGPU_BACKEND=vulkan|dx12|metal|gl` overrides the choice if you need to.
 
 **The hotkey does nothing.** Another app has claimed the chord — the OS gives
 no feedback when it refuses a registration. Settings → **General** shows the
@@ -571,15 +586,18 @@ you wish it handled, open an issue or just send the patch.
 
 A couple of things that make a PR easy to take:
 
-- `cargo test --lib && npm test` from the repo root should pass. CI runs both
-  suites plus clippy and `cargo fmt --check` on Windows *and* macOS for every
-  pull request — and that matrix is the only thing that compiles both halves
-  of the platform split, since half the backend is `cfg`-ed out on any single
-  machine.
+- `cargo test --workspace` should pass. CI runs it plus clippy and
+  `cargo fmt --check` on Windows *and* macOS for every pull request — and
+  that matrix is the only thing that compiles both halves of the platform
+  split, since half the backend is `cfg`-ed out on any single machine.
 - Anything touching command execution or the approval policy wants a test.
   That code decides what runs on someone's files without being asked twice.
-- Platform-specific work belongs behind `src-tauri/src/platform.rs` rather
-  than sprinkled `cfg!` blocks, so the prompt and the shell can't drift apart.
+- UI logic goes in the state machine (`crates/cdout/src/state/`), where it
+  can be unit-tested with injected time; screens stay functions of the state,
+  so a headless screen test can cover them.
+- Platform-specific work belongs behind `crates/cdout-core/src/platform.rs`
+  (shell) and `crates/cdout/src/platform/` (windows) rather than sprinkled
+  `cfg!` blocks, so the prompt and the shell can't drift apart.
 
 If you're adding a skill, note that user skills are scanned and bundled ones
 are not — a PR that ships a bundled skill is a security review, so say what

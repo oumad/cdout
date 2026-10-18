@@ -3,7 +3,7 @@
   End-to-end smoke test of the native cdout app on Windows.
 
 .DESCRIPTION
-  Builds cdout-native with the scripted fake LLM, launches it against an
+  Builds cdout with the scripted fake LLM, launches it against an
   isolated temp data dir and a hotkey that cannot clash with an installed
   cdout, then drives it with synthesized key presses and Windows UI
   Automation (egui exposes its widgets through AccessKit). Every step is
@@ -26,9 +26,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
-$tauriDir = Join-Path $repo "src-tauri"
-$exe = Join-Path $tauriDir "target\debug\cdout-native.exe"
-if (-not $OutDir) { $OutDir = Join-Path $env:TEMP "cdout-native-smoke" }
+$exe = Join-Path $repo "target\debug\cdout.exe"
+if (-not $OutDir) { $OutDir = Join-Path $env:TEMP "cdout-smoke" }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $Hotkey = "Ctrl+Alt+Shift+F9"
@@ -210,7 +209,7 @@ function Start-App([string]$scenario, [hashtable]$config, [hashtable]$ExtraEnv =
     $env:CDOUT_FAKE_LLM_DELAY_MS = "40"
     Remove-Item Env:CDOUT_TEST_PANIC_MS -ErrorAction SilentlyContinue
     foreach ($k in $ExtraEnv.Keys) { Set-Item "env:$k" $ExtraEnv[$k] }
-    $script:log = Join-Path $data "logs\cdout-native.log"
+    $script:log = Join-Path $data "logs\cdout.log"
     $script:cursor = 0
     $script:proc = Start-Process -FilePath $exe -PassThru -RedirectStandardError (Join-Path $data "stderr.txt") -RedirectStandardOutput (Join-Path $data "stdout.txt")
     Write-Host "  pid=$($script:proc.Id) data=$data"
@@ -397,7 +396,7 @@ function Scenario-Crash {
         $newProc = $null
         for ($i = 0; $i -lt 30 -and -not $newProc; $i++) {
             Start-Sleep -Milliseconds 200
-            $newProc = Get-Process -Name "cdout-native" -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $firstPid } | Select-Object -First 1
+            $newProc = Get-Process -Name "cdout" -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $firstPid -and $_.Path -eq $exe } | Select-Object -First 1
         }
         if (-not $newProc) { Fail "no relaunched process found"; return }
         $script:proc = $newProc
@@ -449,10 +448,10 @@ function Scenario-Stop {
 }
 
 if (-not $NoBuild) {
-    Write-Host "== build cdout-native (fake-llm)"
-    Push-Location $tauriDir
+    Write-Host "== build cdout (fake-llm)"
+    Push-Location $repo
     try {
-        cargo build -p cdout-native --features fake-llm
+        cargo build -p cdout --features fake-llm
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
     } finally { Pop-Location }
 }

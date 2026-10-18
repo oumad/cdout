@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist for the cdout bundle, filled in by scripts/package-macos.sh
+  (@VERSION@).
+
+  NSAppleEventsUsageDescription is mandatory: without it the first Apple
+  event to Finder is rejected (-1743) instead of raising the consent dialog.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>cdout</string>
+  <key>CFBundleDisplayName</key>
+  <string>cdout</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.cdout.app</string>
+  <key>CFBundleExecutable</key>
+  <string>cdout</string>
+  <key>CFBundleIconFile</key>
+  <string>cdout.icns</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>10.15</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.productivity</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>cdout reads the folder you have open in Finder and the files you have selected, so you can say "rename these" without typing filenames.</string>
+</dict>
+</plist>

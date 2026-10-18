@@ -1,5 +1,0 @@
-target/
-target-darwin/
-Cargo.lock
-spike.log
-*.png

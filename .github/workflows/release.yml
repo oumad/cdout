@@ -1,100 +1,47 @@
 name: Release
 
-# Build installers for Windows and macOS whenever a version tag is pushed.
-#   git tag v0.1.0 && git push origin v0.1.0
-# Produces a GitHub Release (draft by default — flip `releaseDraft` to false to
-# publish automatically) carrying:
-#   - cdout_<version>_x64-setup.exe        (Windows, NSIS installer)
-#   - cdout_<version>_x64_en-US.msi        (Windows, MSI installer)
-#   - cdout-<version>-portable-x64.zip     (Windows, no-install, unzip-and-run)
-#   - cdout_<version>_universal.dmg        (macOS, Intel + Apple silicon)
-#
-# Both jobs target the same tag, so tauri-action attaches their artifacts to
-# one release rather than creating two.
+# Builds cdout for Windows and macOS whenever a version tag is pushed:
+#   git tag v0.3.1 && git push origin v0.3.1
+# and attaches both builds to one draft GitHub Release:
+#   - cdout-<version>-windows-x64.zip    (cdout.exe; unzip anywhere and run)
+#   - cdout-<version>-universal.dmg      (macOS, Intel + Apple silicon)
+# A manual run from the Actions tab builds only and keeps the files as
+# workflow artifacts.
 
 on:
   push:
     tags:
       - "v*"
-  # Allow a manual dry run from the Actions tab (builds but skips publishing).
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# One release per tag, ever. Two runs for the same tag both reach
-# tauri-action's create-or-update step and can produce duplicate draft
-# releases or collide uploading the same asset. Never cancel a run that may
-# already be mid-upload — queue behind it instead.
+# One release per tag, ever. Never cancel a run that may already be
+# mid-upload; queue behind it instead.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    strategy:
-      # Never cancel the Windows build because the macOS one failed (or vice
-      # versa) — a half-populated draft release is easier to finish by hand
-      # than a fully cancelled one.
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            args: ""
-          # A universal binary is one download for both Intel and Apple
-          # silicon Macs; the alternative is two DMGs users have to choose
-          # between.
-          - os: macos-latest
-            args: "--target universal-apple-darwin"
-
-    runs-on: ${{ matrix.os }}
-
+  # The draft release is created once, up front, so the two platform builds
+  # only ever upload to it and cannot race each other into two releases.
+  draft:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # Separate step rather than the action's `targets:` input, which would
-      # otherwise receive an empty string on the Windows runner.
-      - name: Add macOS universal targets
-        if: matrix.os == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
-      - name: Cache Rust build
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-          key: ${{ matrix.os }}
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      # Builds the frontend + Rust app, bundles the platform installers, then
-      # creates/updates the GitHub Release and uploads them to it.
-      - name: Build app and create release
-        id: tauri
-        uses: tauri-apps/tauri-action@v0
+      - name: Create the draft release unless it exists
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          # Empty on a workflow_dispatch (branch ref) → tauri-action builds
-          # only and creates no release. A real tag push publishes the draft.
-          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('cdout {0}', github.ref_name) || '' }}
-          releaseBody: |
+          TAG: ${{ github.ref_name }}
+          NOTES: |
             cdout ${{ github.ref_name }}.
 
-            **Windows** — download the `.exe` (recommended) or `.msi` and run it.
-            Portable: download the `-portable-x64.zip`, unzip anywhere, run `cdout.exe`.
-            Settings and sessions live in `%APPDATA%\cdout`.
+            **Windows** — download the `.zip`, unzip anywhere, run `cdout.exe`.
+            No installation. Settings and sessions live in `%APPDATA%\cdout`.
 
             **macOS** — download the `.dmg` and drag cdout to Applications.
             The build is unsigned, so the first launch needs a right-click →
@@ -103,54 +50,24 @@ jobs:
             how it reads your open folder and selected files; without it the
             file context stays empty. Settings and sessions live in
             `~/Library/Application Support/cdout`.
-          releaseDraft: true
-          prerelease: false
-          args: ${{ matrix.args }}
-
-      # The Windows installers require admin/uninstall; a portable build is just
-      # the raw exe plus the bundled skills next to it (so `resource_dir()`
-      # resolves them) and a short readme. tauri-action already produced the exe.
-      - name: Stage portable build
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}".TrimStart("v")
-          $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "cdout.exe" -File |
-            Select-Object -First 1
-          if (-not $exe) { throw "Could not find cdout.exe in src-tauri/target/release" }
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+          else
+            gh release create "$TAG" --draft --title "cdout $TAG" --notes "$NOTES"
+          fi
 
-          $stage = "portable/cdout"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item $exe.FullName -Destination $stage
-          Copy-Item "src-tauri/skills" -Destination "$stage/skills" -Recurse
-          @"
-          cdout $version — portable build
-
-          Run cdout.exe. No installation required.
-          The global hotkey (default Ctrl+Alt+A) opens the spotlight prompt.
-          Settings, API keys, and sessions are stored in %APPDATA%\cdout.
-          "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
-
-          $zip = "cdout-$version-portable-x64.zip"
-          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
-          "PORTABLE_ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Upload portable zip to release
-        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ github.ref_name }}" "$env:PORTABLE_ZIP" --clobber
-
-  # The native (egui) app, shipped alongside the Tauri build until it
-  # replaces it. Runs after `release` so the draft release already exists.
-  native:
-    needs: release
+  build:
+    needs: draft
+    # A manual run skips `draft`; still build.
+    if: always() && (needs.draft.result == 'success' || needs.draft.result == 'skipped')
     strategy:
+      # Never cancel the Windows build because the macOS one failed, or vice
+      # versa; a half-populated draft is easier to finish by hand.
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -163,50 +80,44 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
-          key: ${{ matrix.os }}-native
-
-      # No Node step: `-p cdout-native` never compiles the Tauri crate.
+          key: ${{ matrix.os }}-release
 
       - name: Build and zip (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Push-Location src-tauri
-          cargo build -p cdout-native --release
+          cargo build -p cdout --release
           if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-          Pop-Location
-          $version = (Select-String -Path "src-tauri/crates/cdout-native/Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          $stage = "native-stage/cdout"
+          $version = (Select-String -Path "Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $stage = "dist/cdout"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item "src-tauri/target/release/cdout-native.exe" -Destination "$stage/cdout.exe"
+          Copy-Item "target/release/cdout.exe" -Destination $stage
           @"
-          cdout $version (native preview)
+          cdout $version
 
-          Run cdout.exe. No installation and no WebView2 required.
+          Run cdout.exe. No installation required.
           The global hotkey (default Ctrl+Alt+A) opens the spotlight prompt.
-          Settings, API keys and sessions are shared with the regular cdout
-          app and live in %APPDATA%\cdout. Logs: %APPDATA%\cdout\logs.
+          Settings, API keys and sessions live in %APPDATA%\cdout; logs in %APPDATA%\cdout\logs.
           "@ | Set-Content -Path "$stage/README.txt" -Encoding utf8
-          $zip = "cdout-native-$version-windows-x64.zip"
+          $zip = "dist/cdout-$version-windows-x64.zip"
           Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
-          "NATIVE_ASSET=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ASSET=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build app bundle and DMG (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           bash scripts/package-macos.sh
-          echo "NATIVE_ASSET=$(ls dist-native/*.dmg)" >> "$GITHUB_ENV"
+          echo "ASSET=$(ls dist/*.dmg)" >> "$GITHUB_ENV"
 
       - name: Upload to the release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" "$NATIVE_ASSET" --clobber
+        run: gh release upload "${{ github.ref_name }}" "$ASSET" --clobber
 
       - name: Keep the build as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cdout-native-${{ matrix.os }}
-          path: ${{ env.NATIVE_ASSET }}
+          name: cdout-${{ matrix.os }}
+          path: ${{ env.ASSET }}
