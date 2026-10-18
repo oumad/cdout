@@ -236,8 +236,9 @@ impl Dispatcher {
                     tracing::warn!(target: "cdout", "config.ack.error {e}");
                 }
             }),
-            Effect::CleanupLegacy { third_party } => self
-                .blocking(move || Msg::LegacyCleaned(api::cleanup_legacy_credentials(third_party))),
+            Effect::CleanupLegacy => {
+                self.blocking(|| Msg::LegacyCleaned(api::cleanup_legacy_credentials()))
+            }
             Effect::LoadSkills => self.blocking(|| {
                 Msg::SkillsLoaded(api::list_skills(skills::load_all_skills_embedded()))
             }),

@@ -640,7 +640,7 @@ html.js .rev.in{opacity:1;transform:none}
     </div>
     <div class="card rev">
       <div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg></div>
-      <h3>Provider routing</h3><p>Model prefix picks the path: <code>ollama:</code> local, <code>anthropic:</code> direct with prompt caching, everything else through OpenRouter.</p>
+      <h3>Provider routing</h3><p>Model prefix picks the path: <code>claude-code:</code> and <code>codex:</code> your own subscription, <code>ollama:</code> local, <code>anthropic:</code> direct with prompt caching, everything else through OpenRouter.</p>
     </div>
   </div>
 </section>
@@ -665,8 +665,8 @@ html.js .rev.in{opacity:1;transform:none}
 <!-- ══ Providers ══ -->
 <section class="band wrap" id="providers">
   <p class="eyebrow rev">bring your own model</p>
-  <h2 class="rev" style="margin-top:14px">Local, direct, or 400 models on one key</h2>
-  <p class="sub rev">Route by the model you pick. Private on your machine, cached through Anthropic, or anything OpenRouter offers.</p>
+  <h2 class="rev" style="margin-top:14px">Your subscription, your machine, or a key</h2>
+  <p class="sub rev">Already signed in to Claude Code or Codex? That is all it takes. Or run models locally, or bring an API key.</p>
   <div class="prov">
     <div class="pcard local rev">
       <span class="tag">private</span>
@@ -674,14 +674,14 @@ html.js .rev.in{opacity:1;transform:none}
       <p>Local models on <code style="font-family:var(--mono);font-size:12px;color:var(--you)">localhost:11434</code>. Prompts never leave the box — fully offline, fully free.</p>
     </div>
     <div class="pcard direct rev">
-      <span class="tag">cached</span>
-      <h3><span class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19 12 3l8 16"/><path d="M7.5 14h9"/></svg></span>Anthropic direct</h3>
-      <p>Straight to <code style="font-family:var(--mono);font-size:12px;color:var(--you)">api.anthropic.com</code> with your key for prompt caching — the 5–10× cost cut OpenRouter's wire drops.</p>
+      <span class="tag">no key</span>
+      <h3><span class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19 12 3l8 16"/><path d="M7.5 14h9"/></svg></span>Claude Code · Codex</h3>
+      <p>Signed in already? cdout runs the official CLI with its tools off, your plan covers the usage, and every command still waits for your approval.</p>
     </div>
     <div class="pcard router rev">
-      <span class="tag">default</span>
-      <h3><span class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10a4 4 0 0 0-.8-8 5.5 5.5 0 0 0-10.3 2A4.5 4.5 0 0 0 6.5 19H18a4.5 4.5 0 0 0 0-9Z"/></svg></span>OpenRouter</h3>
-      <p>One key, ~400 models — Claude, GPT, Gemini, Llama. cdout pins <code style="font-family:var(--mono);font-size:12px;color:var(--you)">data_collection: deny</code> on every request.</p>
+      <span class="tag">api key</span>
+      <h3><span class="pi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10a4 4 0 0 0-.8-8 5.5 5.5 0 0 0-10.3 2A4.5 4.5 0 0 0 6.5 19H18a4.5 4.5 0 0 0 0-9Z"/></svg></span>OpenRouter · Anthropic</h3>
+      <p>Pay per request: one OpenRouter key reaches Claude, GPT, Gemini and more, or an Anthropic key goes direct with prompt caching.</p>
     </div>
   </div>
 </section>

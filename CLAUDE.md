@@ -30,6 +30,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-smoke.ps1    
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/explorer-selection-check.ps1  # real Explorer windows
 ```
 
+With Claude Code or Codex signed in, `cargo run -p cdout-core --example
+cli_probe` checks the subscription backends end to end (it uses real quota).
+
 The two scripts need an unlocked Windows desktop; they build their own
 binaries, so nothing from `target/` may be running. macOS can only be
 compile-checked from Windows; say so when reporting a change that touches
@@ -52,4 +55,7 @@ macOS code paths.
 - Bundled skills bypass the safety scanner, so adding one is a security
   review; user skills are scanned and quarantined.
 - API keys never leave the core in plaintext (`masked_api_keys`).
+- Subscription backends (`llm/clients/cli.rs`) only ever run the official,
+  unmodified CLI and let it sign in through its own flow. Never read, copy or
+  forward a CLI's credential files or tokens, and never delete them.
 - Pre-release: no backwards-compatibility constraints on the JSON config shape.

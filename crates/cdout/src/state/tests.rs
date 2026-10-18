@@ -1340,6 +1340,15 @@ fn replacement_prefers_cloud_families() {
         Some("ollama:a".into())
     );
     assert_eq!(pick_replacement(&v(&["zzz"])), Some("zzz".into()));
+    // The user's own subscriptions win over everything else.
+    assert_eq!(
+        pick_replacement(&v(&["anthropic/y", "codex:default", "claude-code:sonnet"])),
+        Some("claude-code:sonnet".into())
+    );
+    assert_eq!(
+        pick_replacement(&v(&["ollama:a", "anthropic/y", "codex:default"])),
+        Some("codex:default".into())
+    );
     assert_eq!(pick_replacement(&[]), None);
 }
 

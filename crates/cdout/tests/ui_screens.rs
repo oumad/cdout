@@ -15,6 +15,7 @@ use cdout_core::features::agent::{QuestionData, QuestionOption};
 use cdout_core::features::explorer::ExplorerState;
 use cdout_core::features::sessions::SessionMeta;
 use cdout_core::features::skills::{Skill, SkillMetadata};
+use cdout_core::llm::clients::cli::{Backend, CliStatus};
 use cdout_core::llm::Message;
 use cdout_core::tools::risk::CommandRisk;
 use cdout_core::utils::config::ApprovalMode;
@@ -671,6 +672,41 @@ fn sidebar_collapses() {
 
 // --- onboarding and banner ---
 
+fn cli_status(backend: Backend, installed: bool, signed_in: bool) -> CliStatus {
+    CliStatus {
+        backend,
+        name: backend.name(),
+        installed,
+        signed_in,
+        detail: if signed_in {
+            "Max plan".into()
+        } else {
+            "Not signed in".into()
+        },
+        sign_in_command: backend.sign_in_command(),
+        install_url: backend.install_url(),
+    }
+}
+
+#[test]
+fn settings_list_signed_in_subscriptions() {
+    let _serial = serial();
+    let mut s = settings_state(SettingsTab::Providers);
+    s.provider_status = Some(ProviderStatus {
+        subscriptions: vec![
+            cli_status(Backend::ClaudeCode, true, true),
+            cli_status(Backend::Codex, true, false),
+        ],
+        any_usable: true,
+        ..Default::default()
+    });
+    let mut h = main_window(s);
+    h.run();
+    h.get_by_label("Subscriptions");
+    h.get_by_label("signed in · Max plan");
+    h.get_by_label("codex login");
+}
+
 #[test]
 fn onboarding_appears_when_nothing_is_usable() {
     let _serial = serial();
@@ -679,12 +715,25 @@ fn onboarding_appears_when_nothing_is_usable() {
     s.settings.ollama_url = "http://localhost:11434".into();
     s.provider_status = Some(ProviderStatus {
         ollama_reachable: false,
+        subscriptions: vec![
+            cli_status(Backend::ClaudeCode, true, false),
+            cli_status(Backend::Codex, false, false),
+        ],
         ..Default::default()
     });
     let mut h = main_window(s);
     h.run();
     h.get_by_label("Set up a model to get started");
     h.get_by_label("No Ollama at http://localhost:11434");
+    h.get_by_label("Use a subscription you already have");
+    h.get_by_label("installed, not signed in");
+    h.get_by_label("claude");
+    h.get_by_label("not installed");
+    h.get_by_label("Get Codex ⬈").click();
+    h.run();
+    assert!(take(&mut h)
+        .iter()
+        .any(|m| matches!(m, Msg::OpenUrl(u) if u == Backend::Codex.install_url())));
     if snapshots_enabled() {
         h.snapshot("main_onboarding");
     }
@@ -706,14 +755,10 @@ fn migration_banner_actions() {
     s.main.migration_banner = true;
     let mut h = main_window(s);
     h.run();
-    h.get_by_label("Cloud providers changed");
-    h.get_by_label("🗑 Clean up legacy creds").click();
+    h.get_by_label("Old credentials found");
+    h.get_by_label("🗑 Remove the old file").click();
     h.run();
-    h.get_by_label("Only cdout's own file").click();
-    h.run();
-    assert!(take(&mut h)
-        .iter()
-        .any(|m| matches!(m, Msg::CleanupLegacy { third_party: false })));
+    assert!(take(&mut h).iter().any(|m| matches!(m, Msg::CleanupLegacy)));
     h.get_by_label("Dismiss banner").click();
     h.run();
     assert!(take(&mut h).iter().any(|m| matches!(m, Msg::DismissBanner)));

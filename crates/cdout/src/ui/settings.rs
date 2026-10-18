@@ -363,12 +363,25 @@ fn general(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
 // --- Providers ---
 
 fn providers(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
-    let s = &mut state.settings;
     header(
         ui,
         "Providers",
         "Configure where cdout sends model requests.",
     );
+    sub(
+        ui,
+        "Subscriptions",
+        "Agent CLIs signed in on this machine. cdout runs them with their own tools switched off, so your plan covers the usage and every command still waits for your approval.",
+    );
+    super::onboarding::subscription_rows(
+        ui,
+        state
+            .provider_status
+            .as_ref()
+            .map(|p| p.subscriptions.as_slice()),
+        out,
+    );
+    let s = &mut state.settings;
     sub(
         ui,
         "Local",
@@ -392,7 +405,7 @@ fn providers(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
         "Defaults to http://localhost:11434. Ollama models are prefixed `ollama:` in the picker.",
     );
 
-    sub(ui, "Cloud", "API keys for hosted providers. Stored locally in your config. Cloud prompts route through openrouter.ai by default; the Anthropic direct path is opt-in for prompt caching.");
+    sub(ui, "API keys", "Pay-per-use keys for hosted providers, stored locally in your config. Prompts go through openrouter.ai, or straight to Anthropic with an Anthropic key.");
     key_field(
         ui,
         "OpenRouter API Key",

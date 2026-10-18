@@ -54,7 +54,7 @@ fn conversation(ui: &mut Ui, state: &mut AppState, md: &mut CommonMarkCache, out
         .frame(egui::Frame::new().fill(GRAY_950))
         .show(ui, |ui| {
             if state.main.migration_banner {
-                onboarding::migration_banner(ui, state, out);
+                onboarding::migration_banner(ui, out);
             }
             toolbar(ui, state, out);
             if state.main.context_open {

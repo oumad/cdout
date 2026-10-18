@@ -86,8 +86,6 @@ pub struct MainWindowState {
     pub context_open: bool,
     pub focus_input: bool,
     pub migration_banner: bool,
-    /// The banner's "also delete other tools' credentials?" choice is open.
-    pub cleanup_confirm: bool,
 }
 
 #[derive(Debug, Default)]
@@ -391,9 +389,7 @@ pub enum Msg {
     ChangeHotkey(String),
     DismissBanner,
     OpenSettingsFromBanner,
-    CleanupLegacy {
-        third_party: bool,
-    },
+    CleanupLegacy,
     OnboardingSaveKey(String),
     OnboardingSaveOllamaUrl(String),
     OnboardingRecheck,
@@ -538,9 +534,7 @@ pub enum Effect {
     },
     SetShowFree(bool),
     SetDisclosureAck,
-    CleanupLegacy {
-        third_party: bool,
-    },
+    CleanupLegacy,
     LoadSkills,
     SaveOpenrouterKey(String),
     SaveOllamaUrl(String),
@@ -671,10 +665,7 @@ impl AppState {
                 self.dismiss_banner(fx);
                 self.open_settings(fx);
             }
-            Msg::CleanupLegacy { third_party } => {
-                self.main.cleanup_confirm = false;
-                fx.push(Effect::CleanupLegacy { third_party });
-            }
+            Msg::CleanupLegacy => fx.push(Effect::CleanupLegacy),
             Msg::OnboardingSaveKey(key) => {
                 if key.trim().is_empty() {
                     self.show_toast("API key cannot be empty", now);

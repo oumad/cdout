@@ -12,11 +12,14 @@ use super::{
     NO_MODEL_SPOTLIGHT_ERROR, RESTARTED_NOTICE,
 };
 
-/// Port of `pickReplacement` (`src/hooks/useModels.ts`): prefer cloud
-/// families the user most likely meant over a local downgrade.
+/// The model to switch to when the selected one is gone: the user's own
+/// subscriptions, then cloud families they most likely meant, then local.
 pub fn pick_replacement(models: &[String]) -> Option<String> {
     let find = |prefix: &str| models.iter().find(|m| m.starts_with(prefix)).cloned();
-    find("anthropic/")
+    // A subscription the user already pays for comes first.
+    find("claude-code:")
+        .or_else(|| find("codex:"))
+        .or_else(|| find("anthropic/"))
         .or_else(|| find("anthropic:"))
         .or_else(|| find("openai/"))
         .or_else(|| find("google/"))
@@ -452,6 +455,7 @@ impl AppState {
         self.settings.hotkey_error = None;
         self.main.settings_open = true;
         self.fetch_models(fx);
+        fx.push(Effect::FetchProviderStatus);
         fx.push(Effect::LoadSkills);
     }
 
