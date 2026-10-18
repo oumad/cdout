@@ -143,6 +143,7 @@ fn fit_window_height(ui: &Ui, card_height: f32) {
         .ctx()
         .input(|i| i.viewport().inner_rect.map(|r| r.height()));
     if current.is_some_and(|h| (h - wanted).abs() > 1.0) {
+        tracing::info!(target: "cdout", "spotlight.resize from={current:?} to={wanted}");
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
                 CARD_WIDTH, wanted,

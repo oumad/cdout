@@ -259,6 +259,7 @@ impl Dispatcher {
                     out.send(Msg::EffectFailed(e));
                 }
             }
+            Effect::SaveDraft(text) => self.io.run(move || save_draft(&text)),
             Effect::LoadExplorerDebug => self.blocking(|| {
                 Msg::ExplorerDebugLoaded(
                     explorer::get_explorer_debug_info()
@@ -294,9 +295,32 @@ fn is_ui_effect(e: &Effect) -> bool {
     )
 }
 
+const DRAFT_FILE: &str = "spotlight_draft.txt";
+
+fn draft_path() -> std::path::PathBuf {
+    cdout_core::utils::paths::app_data_dir().join(DRAFT_FILE)
+}
+
+fn save_draft(text: &str) {
+    let path = draft_path();
+    let result = if text.is_empty() {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    } else {
+        std::fs::write(&path, text)
+    };
+    if let Err(e) = result {
+        tracing::warn!(target: "cdout", "draft.save.error {e}");
+    }
+}
+
 fn load_startup() -> StartupData {
     let has_legacy = api::has_legacy_credentials().unwrap_or(false);
     StartupData {
+        draft: std::fs::read_to_string(draft_path()).unwrap_or_default(),
+        restarted_after_crash: crate::crash::was_restarted(),
         ollama_url: config::get_ollama_url(),
         approval_mode: config::get_approval_mode(),
         hotkey: config::get_hotkey(),

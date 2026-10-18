@@ -8,6 +8,7 @@
 //!   end to end by `scripts/native-smoke.ps1`).
 
 pub mod app;
+pub mod crash;
 pub mod dispatch;
 pub mod fonts;
 pub mod hotkey;
@@ -23,9 +24,10 @@ pub fn run() {
     logging::init();
     tracing::info!(
         target: "cdout",
-        "app.start version={} data_dir={}",
+        "app.start version={} data_dir={} restarted={}",
         env!("CARGO_PKG_VERSION"),
-        cdout_core::utils::paths::app_data_dir().display()
+        cdout_core::utils::paths::app_data_dir().display(),
+        crash::was_restarted()
     );
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -46,11 +48,22 @@ pub fn run() {
         ..Default::default()
     };
     {
-        // A utility that idles in the tray has no business waking the
-        // discrete GPU.
         use eframe::{egui_wgpu, wgpu};
         let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+        // A utility that idles in the tray has no business waking the
+        // discrete GPU.
         setup.power_preference = wgpu::PowerPreference::LowPower;
+        // Windows: DirectX 12, not Vulkan. When another process (a local
+        // LLM, a render) has filled the GPU's memory, Vulkan allocations
+        // fail outright, wgpu marks the device lost, and egui's renderer
+        // panics on the next frame; WDDM pages memory for DirectX 12 and
+        // the app keeps running. Reproduced both ways with VRAM full.
+        // `WGPU_BACKEND` still overrides, for experiments.
+        #[cfg(target_os = "windows")]
+        {
+            setup.instance_descriptor.backends =
+                wgpu::Backends::from_env().unwrap_or(wgpu::Backends::DX12);
+        }
         options.wgpu_options.wgpu_setup = egui_wgpu::WgpuSetup::CreateNew(setup);
     }
 

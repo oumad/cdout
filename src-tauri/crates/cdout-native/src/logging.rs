@@ -32,6 +32,7 @@ pub fn init() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!(target: "cdout", "app.panic {}", panic_message(info));
+        crate::crash::relaunch_after_panic();
         default_hook(info);
     }));
 }

@@ -13,13 +13,13 @@
   to -OutDir for visual inspection.
 
 .PARAMETER Scenarios
-  Any of: text, command, question, stop, markdown, hidden. Default: all.
+  Any of: text, command, question, stop, markdown, hidden, crash. Default: all.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-smoke.ps1
 #>
 param(
-    [string[]]$Scenarios = @("text", "command", "question", "stop", "markdown", "hidden"),
+    [string[]]$Scenarios = @("text", "command", "question", "stop", "markdown", "hidden", "crash"),
     [string]$OutDir = "",
     [switch]$NoBuild
 )
@@ -197,7 +197,7 @@ function Click-Element([string]$namePattern, [string]$what) {
     return $true
 }
 
-function Start-App([string]$scenario, [hashtable]$config) {
+function Start-App([string]$scenario, [hashtable]$config, [hashtable]$ExtraEnv = @{}) {
     $data = Join-Path $env:TEMP ("cdout-smoke-" + $scenario + "-" + [guid]::NewGuid().ToString("N").Substring(0, 6))
     New-Item -ItemType Directory -Force -Path $data | Out-Null
     if ($config) {
@@ -208,6 +208,8 @@ function Start-App([string]$scenario, [hashtable]$config) {
     $env:CDOUT_HOTKEY = $Hotkey
     $env:CDOUT_FAKE_LLM = $scenario
     $env:CDOUT_FAKE_LLM_DELAY_MS = "40"
+    Remove-Item Env:CDOUT_TEST_PANIC_MS -ErrorAction SilentlyContinue
+    foreach ($k in $ExtraEnv.Keys) { Set-Item "env:$k" $ExtraEnv[$k] }
     $script:log = Join-Path $data "logs\cdout-native.log"
     $script:cursor = 0
     $script:proc = Start-Process -FilePath $exe -PassThru -RedirectStandardError (Join-Path $data "stderr.txt") -RedirectStandardOutput (Join-Path $data "stdout.txt")
@@ -220,7 +222,7 @@ function Stop-App($data) {
         Stop-Process -Id $script:proc.Id -Force
         $script:proc.WaitForExit(3000) | Out-Null
     }
-    $panics = Select-String -Path $script:log -Pattern "app.panic" -ErrorAction SilentlyContinue
+    $panics = Select-String -Path $script:log -Pattern "app.panic" -ErrorAction SilentlyContinue | Where-Object { $_.Line -notmatch "CDOUT_TEST_PANIC_MS" }
     if ($panics) { Fail "panic logged: $($panics[0].Line)" }
     if ($script:failures.Count -gt 0) {
         Write-Host "  --- log tail ---"
@@ -369,6 +371,57 @@ function Scenario-Hidden {
     } finally { Stop-App $data }
 }
 
+# A panic on the UI thread must relaunch the app with the draft restored.
+function Scenario-Crash {
+    $data = Start-App "text" $null -ExtraEnv @{ CDOUT_TEST_PANIC_MS = "7000" }
+    $firstPid = $script:proc.Id
+    try {
+        if (-not (Expect "app\.start" "app started")) { return }
+        if (-not (Expect "hotkey\.registered" "hotkey registered")) { return }
+        if (-not (Expect "main\.shown" "main window shown at launch")) { return }
+        Start-Sleep -Milliseconds 800
+        Send-Chord
+        if (-not (Expect "spotlight\.shown" "hotkey shows the spotlight" 3000)) { return }
+        if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus" 2000)) { return }
+        Start-Sleep -Milliseconds 300
+        Type-Text "keep me"
+        Start-Sleep -Milliseconds 700   # past the 400 ms draft debounce
+        if ((Get-Content (Join-Path $data "spotlight_draft.txt") -ErrorAction SilentlyContinue) -eq "keep me") { Pass "draft written to disk while typing" } else { Fail "draft file missing or wrong" }
+
+        if (-not (Expect "app\.panic CDOUT_TEST_PANIC_MS" "simulated crash happened" 12000)) { return }
+        if (-not (Expect "crash\.restart spawned pid=(\d+)" "crash handler relaunched the app" 3000)) { return }
+        $script:proc.WaitForExit(5000) | Out-Null
+        if ($script:proc.HasExited) { Pass "crashed process exited" } else { Fail "crashed process still alive" }
+
+        # Adopt the new process so Stop-App and the foreground guard track it.
+        $newProc = $null
+        for ($i = 0; $i -lt 30 -and -not $newProc; $i++) {
+            Start-Sleep -Milliseconds 200
+            $newProc = Get-Process -Name "cdout-native" -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $firstPid } | Select-Object -First 1
+        }
+        if (-not $newProc) { Fail "no relaunched process found"; return }
+        $script:proc = $newProc
+        Pass "relaunched process pid=$($newProc.Id)"
+        if (-not (Expect "app\.start .*restarted=true" "new instance knows it was restarted" 10000)) { return }
+        if (-not (Expect "spotlight\.shown" "spotlight comes back on its own" 8000)) { return }
+        if (-not (Expect "spotlight\.focused" "restored spotlight takes keyboard focus" 3000)) { return }
+        # The toast lives on the main window (UIA can see it) for 8 s.
+        if (Find-Element "*restarted after a crash*" 4000) { Pass "restart notice shown" } else { Fail "restart notice not shown" }
+        # The spotlight is a child viewport with no UIA tree, so prove the
+        # restored text by submitting it: the session file must contain it.
+        Start-Sleep -Milliseconds 300
+        Type-Text "{ENTER}"
+        if (-not (Expect "spotlight\.submitted" "restored prompt submits")) { return }
+        Expect "agent\.step\.done kind=text" "task runs after the restart" | Out-Null
+        Start-Sleep -Milliseconds 1200
+        $json = (Get-ChildItem (Join-Path $data "sessions") -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+        if ($json -match '"keep me"') { Pass "the restored text was what got submitted" } else { Fail "session does not contain the restored prompt" }
+        if (Test-Path (Join-Path $data "spotlight_draft.txt")) { Fail "draft file still present after submit" } else { Pass "draft cleared after submit" }
+        if ($script:proc.HasExited) { Fail "relaunched instance died" } else { Pass "relaunched instance keeps running" }
+        Snap "crash-1-after.png" (Main-Window)
+    } finally { Stop-App $data }
+}
+
 function Scenario-Markdown {
     $data = Start-App "markdown" $null
     try {
@@ -414,6 +467,7 @@ foreach ($s in $Scenarios) {
         "stop" { Scenario-Stop }
         "markdown" { Scenario-Markdown }
         "hidden" { Scenario-Hidden }
+        "crash" { Scenario-Crash }
         default { Fail "unknown scenario $s" }
     }
 }

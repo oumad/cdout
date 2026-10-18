@@ -36,6 +36,11 @@ pub const BLUR_GRACE: Duration = Duration::from_millis(300);
 pub const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 pub const AUTO_STEP_DELAY: Duration = Duration::from_millis(500);
 pub const TOAST_DURATION: Duration = Duration::from_millis(8000);
+/// The spotlight prompt is written to disk this long after the last edit,
+/// so a crash never loses what was being typed.
+pub const DRAFT_DEBOUNCE: Duration = Duration::from_millis(400);
+pub const RESTARTED_NOTICE: &str =
+    "cdout restarted after a crash. Your prompt was kept; details are in the log.";
 pub const MODEL_POLL: Duration = Duration::from_millis(5000);
 pub const MAX_AUTO_STEPS: u32 = 10;
 pub const MAX_CONSECUTIVE_FAILURES: u32 = 3;
@@ -60,10 +65,17 @@ pub struct SpotlightState {
     /// When the window last gained focus; blur within [`BLUR_GRACE`] of this
     /// is ignored (the OS can bounce focus while a window is being shown).
     pub shown_at: Option<Instant>,
+    /// The window has had keyboard focus since it was last shown. Until
+    /// then a "not focused" report is the OS still deciding, not the user
+    /// clicking away, and must not hide the palette.
+    pub focused_once: bool,
     pub explorer: Option<ExplorerState>,
     /// Ask the UI to focus the prompt on its next frame.
     pub focus_input: bool,
     pub error: Option<Toast>,
+    /// What is on disk; the prompt is saved whenever it differs.
+    pub saved_draft: String,
+    pub draft_due: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -318,6 +330,10 @@ pub struct StartupData {
     pub show_free: bool,
     pub show_migration_banner: bool,
     pub skills: Option<ListSkillsResult>,
+    /// Spotlight text saved by the previous run.
+    pub draft: String,
+    /// This process was relaunched by the crash handler.
+    pub restarted_after_crash: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -531,6 +547,8 @@ pub enum Effect {
     OpenUrl(String),
     OpenFileAccessSettings,
     LoadExplorerDebug,
+    /// Persist the spotlight prompt (empty string removes the draft).
+    SaveDraft(String),
 }
 
 // --- Construction and the update entry point ---
@@ -718,7 +736,7 @@ impl AppState {
                 fx.push(Effect::Quit);
             }
 
-            Msg::StartupLoaded(data) => self.on_startup_loaded(data),
+            Msg::StartupLoaded(data) => self.on_startup_loaded(data, now, fx),
             Msg::ExplorerResult { purpose, result } => self.on_explorer(purpose, result, now, fx),
             Msg::ModelsLoaded(result) => self.on_models(result, now, fx),
             Msg::SelectedModelLoaded(saved) => self.on_selected_model(saved, fx),
@@ -851,11 +869,31 @@ impl AppState {
             self.chat.auto_step_at,
             self.toast.as_ref().map(|t| t.expires_at),
             self.spotlight.error.as_ref().map(|t| t.expires_at),
+            self.spotlight.draft_due,
             self.models.next_poll,
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// The UI edits `spotlight.prompt` in place; notice that here and save
+    /// it after a short quiet period.
+    fn tick_draft(&mut self, now: Instant, fx: &mut Vec<Effect>) {
+        let sp = &mut self.spotlight;
+        if sp.prompt == sp.saved_draft {
+            sp.draft_due = None;
+            return;
+        }
+        match sp.draft_due {
+            None => sp.draft_due = Some(now + DRAFT_DEBOUNCE),
+            Some(due) if now >= due => {
+                sp.draft_due = None;
+                sp.saved_draft = sp.prompt.clone();
+                fx.push(Effect::SaveDraft(sp.prompt.clone()));
+            }
+            Some(_) => {}
+        }
     }
 
     fn on_tick(&mut self, now: Instant, fx: &mut Vec<Effect>) {
@@ -873,6 +911,7 @@ impl AppState {
         if self.sessions.save_due.is_some_and(|due| now >= due) {
             self.flush_save(fx);
         }
+        self.tick_draft(now, fx);
         if self.chat.auto_step_at.is_some_and(|at| now >= at) {
             self.run_auto_continuation(now, fx);
         }

@@ -230,6 +230,13 @@ impl CdoutApp {
         if let Some(rs) = &cc.wgpu_render_state {
             let info = rs.adapter.get_info();
             tracing::info!(target: "cdout", "gpu.adapter backend={:?} name={}", info.backend, info.name);
+            // wgpu's default handler for an uncaptured error is a panic.
+            // Log it; a lost device still ends in the crash handler, but
+            // a recoverable validation error no longer kills the app.
+            rs.device
+                .on_uncaptured_error(Arc::new(|e: eframe::wgpu::Error| {
+                    tracing::error!(target: "cdout", "gpu.error {e}");
+                }));
         }
         let (fonts, loaded) = crate::fonts::definitions();
         ctx.set_fonts(fonts);
@@ -300,6 +307,25 @@ fn register_startup_hotkey() -> Result<(), String> {
     hotkey::apply(default)
 }
 
+/// `CDOUT_TEST_PANIC_MS=<n>`: panic on the UI thread n ms after startup, to
+/// exercise the crash handler end to end. Test builds only.
+#[cfg(feature = "fake-llm")]
+fn test_crash_if_requested(ctx: &egui::Context) {
+    use std::sync::OnceLock;
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = *START.get_or_init(Instant::now);
+    if let Some(ms) = std::env::var("CDOUT_TEST_PANIC_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        if start.elapsed() >= std::time::Duration::from_millis(ms) {
+            panic!("CDOUT_TEST_PANIC_MS: simulated crash on the UI thread");
+        }
+        // Passes only happen on repaint; keep them coming until the deadline.
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+}
+
 fn spotlight_pass(ui: &mut egui::Ui, shared: &Mutex<Shared>) {
     let ctx = ui.ctx().clone();
     let mut guard = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -347,6 +373,8 @@ impl eframe::App for CdoutApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(feature = "fake-llm")]
+        test_crash_if_requested(ctx);
         let spotlight_visible;
         {
             let mut guard = self.shared.lock().unwrap_or_else(|e| e.into_inner());

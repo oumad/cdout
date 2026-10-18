@@ -179,6 +179,31 @@ fn spotlight_blur_respects_the_grace_period() {
 }
 
 #[test]
+fn blur_before_the_first_focus_does_not_hide() {
+    // Windows may report "not focused" before it grants focus to a freshly
+    // shown window; that must not close the palette.
+    let now = t0();
+    let mut s = state();
+    s.update(Msg::HotkeyPressed, now);
+    assert!(s
+        .update(Msg::SpotlightFocusChanged(false), ms(now, 50))
+        .is_empty());
+    assert!(s
+        .update(Msg::SpotlightFocusChanged(false), ms(now, 2000))
+        .is_empty());
+    assert!(s.spotlight.visible);
+    s.update(Msg::SpotlightFocusChanged(true), ms(now, 2100));
+    let fx = s.update(Msg::SpotlightFocusChanged(false), ms(now, 2500));
+    assert_eq!(fx, vec![Effect::HideSpotlight(HideReason::Blur)]);
+    // Shown again: the flag resets.
+    s.update(Msg::HotkeyPressed, ms(now, 3000));
+    assert!(s
+        .update(Msg::SpotlightFocusChanged(false), ms(now, 4000))
+        .is_empty());
+    assert!(s.spotlight.visible);
+}
+
+#[test]
 fn escape_hides_once() {
     let mut s = state();
     s.update(Msg::HotkeyPressed, t0());
@@ -1535,6 +1560,73 @@ fn hotkey_startup_failure_is_visible() {
         s.settings.hotkey_error.as_deref(),
         Some("Could not register 'Ctrl+Alt+A'.")
     );
+}
+
+#[test]
+fn spotlight_draft_is_saved_after_a_pause_and_cleared_on_submit() {
+    let now = t0();
+    let mut s = state();
+    s.update(Msg::HotkeyPressed, now);
+    s.spotlight.prompt = "rena".into();
+    assert!(
+        s.update(Msg::Tick, now).is_empty(),
+        "no save on the first tick"
+    );
+    assert_eq!(s.next_wakeup(), Some(ms(now, 400)));
+    s.spotlight.prompt = "rename".into();
+    assert!(s.update(Msg::Tick, ms(now, 399)).is_empty());
+    let fx = s.update(Msg::Tick, ms(now, 400));
+    assert_eq!(fx, vec![Effect::SaveDraft("rename".into())]);
+    assert!(
+        s.update(Msg::Tick, ms(now, 900)).is_empty(),
+        "unchanged: no re-save"
+    );
+
+    let fx = s.update(
+        Msg::SpotlightSubmit {
+            auto_approve: false,
+        },
+        ms(now, 1000),
+    );
+    assert!(fx.contains(&Effect::SaveDraft(String::new())), "{fx:?}");
+    assert!(s.spotlight.saved_draft.is_empty());
+}
+
+#[test]
+fn startup_restores_the_draft_and_announces_a_restart() {
+    let now = t0();
+    let mut s = state();
+    let data = StartupData {
+        draft: "convert these".into(),
+        restarted_after_crash: true,
+        ..Default::default()
+    };
+    let fx = s.update(Msg::StartupLoaded(data), now);
+    assert_eq!(s.spotlight.prompt, "convert these");
+    assert!(
+        s.spotlight.visible,
+        "the palette comes back after a crash while typing"
+    );
+    assert!(fx.contains(&Effect::ShowSpotlight));
+    assert_eq!(s.toast.as_ref().unwrap().message, RESTARTED_NOTICE);
+    assert!(
+        s.update(Msg::Tick, ms(now, 1000)).is_empty(),
+        "restored draft is not re-saved"
+    );
+
+    // A normal start with a leftover draft: restore quietly, no palette.
+    let mut s = state();
+    let fx = s.update(
+        Msg::StartupLoaded(StartupData {
+            draft: "leftover".into(),
+            ..Default::default()
+        }),
+        now,
+    );
+    assert_eq!(s.spotlight.prompt, "leftover");
+    assert!(!s.spotlight.visible);
+    assert!(!fx.contains(&Effect::ShowSpotlight));
+    assert!(s.toast.is_none());
 }
 
 #[test]

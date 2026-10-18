@@ -9,7 +9,7 @@ use cdout_core::features::sessions::Session;
 
 use super::{
     AppState, Effect, ExplorerPurpose, HideReason, SessionPurpose, StartupData, MODEL_POLL,
-    NO_MODEL_SPOTLIGHT_ERROR,
+    NO_MODEL_SPOTLIGHT_ERROR, RESTARTED_NOTICE,
 };
 
 /// Port of `pickReplacement` (`src/hooks/useModels.ts`): prefer cloud
@@ -43,7 +43,12 @@ impl AppState {
         self.schedule_poll(now);
     }
 
-    pub(super) fn on_startup_loaded(&mut self, data: StartupData) {
+    pub(super) fn on_startup_loaded(
+        &mut self,
+        data: StartupData,
+        now: Instant,
+        fx: &mut Vec<Effect>,
+    ) {
         let s = &mut self.settings;
         s.ollama_url = data.ollama_url.clone();
         s.draft_ollama_url = data.ollama_url.clone();
@@ -56,24 +61,44 @@ impl AppState {
             s.skills = data.skills;
         }
         self.main.migration_banner = data.show_migration_banner;
+
+        if !data.draft.is_empty() && self.spotlight.prompt.is_empty() {
+            self.spotlight.prompt = data.draft.clone();
+        }
+        self.spotlight.saved_draft = data.draft;
+        self.spotlight.draft_due = None;
+        if data.restarted_after_crash {
+            self.show_toast(RESTARTED_NOTICE, now);
+            if !self.spotlight.prompt.is_empty() {
+                // They were typing when it died: put the palette back.
+                self.show_spotlight(fx);
+            }
+        }
     }
 
     // --- spotlight ---
 
     pub(super) fn on_hotkey(&mut self, fx: &mut Vec<Effect>) {
         tracing::info!(target: "cdout", "hotkey.pressed");
+        self.show_spotlight(fx);
+    }
+
+    pub(super) fn show_spotlight(&mut self, fx: &mut Vec<Effect>) {
         self.spotlight.visible = true;
         self.spotlight.focus_input = true;
+        self.spotlight.focused_once = false;
+        self.spotlight.shown_at = None;
         fx.push(Effect::ShowSpotlight);
     }
 
     pub(super) fn on_spotlight_focus(&mut self, focused: bool, now: Instant, fx: &mut Vec<Effect>) {
         if focused {
             tracing::info!(target: "cdout", "spotlight.focused");
+            self.spotlight.focused_once = true;
             self.spotlight.shown_at = Some(now);
             self.spotlight.focus_input = true;
             fx.push(Effect::FetchExplorer(ExplorerPurpose::Spotlight));
-        } else if self.spotlight.visible {
+        } else if self.spotlight.visible && self.spotlight.focused_once {
             let grace_over = self
                 .spotlight
                 .shown_at
@@ -113,6 +138,10 @@ impl AppState {
         fx.push(Effect::ShowMain {
             center_on_cursor: true,
         });
+        // The draft served its purpose; don't restore it next launch.
+        self.spotlight.saved_draft.clear();
+        self.spotlight.draft_due = None;
+        fx.push(Effect::SaveDraft(String::new()));
 
         // The main window's `SPOTLIGHT_SUBMITTED` handler.
         self.main.settings_open = false;
