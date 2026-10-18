@@ -8,4 +8,4 @@ resolver = "2"
 # The one place the version is bumped: both crates inherit it, and the
 # release workflow and scripts/package-macos.sh read it from here.
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"

@@ -1,7 +1,7 @@
 name: Release
 
 # Builds cdout for Windows and macOS whenever a version tag is pushed:
-#   git tag v0.4.0 && git push origin v0.4.0
+#   git tag v0.5.0 && git push origin v0.5.0
 # and attaches both builds to one draft GitHub Release:
 #   - cdout-<version>-windows-x64.zip    (cdout.exe; unzip anywhere and run)
 #   - cdout-<version>-universal.dmg      (macOS, Intel + Apple silicon)
