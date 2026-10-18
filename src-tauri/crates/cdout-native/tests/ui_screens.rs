@@ -186,13 +186,41 @@ fn spotlight_shows_the_file_manager_context() {
             .collect(),
     });
     let mut h = spotlight(s);
-    h.run();
+    h.run_steps(3);
     h.get_by_label("🗁 C:/work");
-    h.get_by_label("🗋 a.mov, b.mov");
-    h.get_by_label(" +2 more");
+    h.get_by_label("🗋 a.mov, b.mov +2 more");
     if snapshots_enabled() {
         h.snapshot("spotlight_with_context");
     }
+}
+
+#[test]
+fn spotlight_long_paths_stay_inside_the_card() {
+    let _serial = serial();
+    let mut s = base_state();
+    let dir = "C:/Users/someone/Videos/".to_string() + &"deeply/nested/".repeat(6);
+    s.spotlight.explorer = Some(ExplorerState {
+        path: dir.clone(),
+        selected_files: (0..3)
+            .map(|i| format!("{dir}Enregistrement 2026-10-18 08262{i} with a long name.mp4"))
+            .collect(),
+    });
+    let mut h = spotlight(s);
+    h.run_steps(3); // centred rows settle after a frame
+    h.get_by_label_contains("Enregistrement 2026-10-18 082620 with a long name.mp4");
+    for node in h.get_all_by(|n| n.bounding_box().is_some()) {
+        let r = node.rect();
+        assert!(
+            r.max.x <= 560.5 && r.min.x >= -0.5,
+            "{node:?} spans x={}..{} outside the 560pt card",
+            r.min.x,
+            r.max.x
+        );
+    }
+    // The model row is centred: its left edge is well inside the card.
+    let model = h.get_by_label("Model").rect();
+    assert!(model.min.x > 60.0, "model row starts at x={}", model.min.x);
+    assert!(model.max.x < 500.0, "model row ends at x={}", model.max.x);
 }
 
 #[test]

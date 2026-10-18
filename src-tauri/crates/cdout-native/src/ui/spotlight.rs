@@ -92,11 +92,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
                         .size(11.0)
                         .color(GRAY_600),
                     );
-                    ui.horizontal(|ui| {
-                        // Centre the row by measuring nothing: a right-to-left
-                        // half and a left-to-right half meet in the middle.
-                        let w = ui.available_width();
-                        ui.add_space((w / 2.0 - 150.0).max(0.0));
+                    centered_row(ui, "spotlight-model-row", |ui| {
                         model_select::show(
                             ui,
                             "spotlight-model",
@@ -136,19 +132,32 @@ pub fn show(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
     });
 }
 
-/// Resize the window to the card's height (no-op when it already fits).
+/// Resize the window to the card's height (no-op when it already fits),
+/// moving it up or down by half the change so it stays centred where it
+/// was shown instead of growing downwards.
 fn fit_window_height(ui: &Ui, card_height: f32) {
     let wanted = card_height.ceil();
-    let current = ui
+    let (inner, outer) = ui
         .ctx()
-        .input(|i| i.viewport().inner_rect.map(|r| r.height()));
-    if current.is_some_and(|h| (h - wanted).abs() > 1.0) {
-        tracing::info!(target: "cdout", "spotlight.resize from={current:?} to={wanted}");
-        ui.ctx()
-            .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                CARD_WIDTH, wanted,
-            )));
+        .input(|i| (i.viewport().inner_rect, i.viewport().outer_rect));
+    let Some(current) = inner.map(|r| r.height()) else {
+        return;
+    };
+    let delta = wanted - current;
+    if delta.abs() <= 1.0 {
+        return;
     }
+    tracing::info!(target: "cdout", "spotlight.resize from={current} to={wanted}");
+    let ctx = ui.ctx();
+    if let Some(outer) = outer {
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            outer.min.x,
+            (outer.min.y - delta / 2.0).round(),
+        )));
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+        CARD_WIDTH, wanted,
+    )));
 }
 
 fn context_lines(ui: &mut Ui, state: &AppState, file_manager: &str) {
@@ -160,18 +169,22 @@ fn context_lines(ui: &mut Ui, state: &AppState, file_manager: &str) {
         .filter(|e| !e.path.is_empty())
     {
         Some(e) => {
-            ui.label(small(format!("🗁 {}", e.path), GRAY_500))
+            ui.add(egui::Label::new(small(format!("🗁 {}", e.path), GRAY_500)).truncate())
                 .on_hover_text(&e.path);
-            if let Some((names, more)) = spotlight_files_line(&e.selected_files) {
-                ui.horizontal(|ui| {
-                    let w = ui.available_width();
-                    ui.add_space((w / 2.0 - 140.0).max(0.0));
-                    ui.label(small(format!("🗋 {names}"), GRAY_400))
-                        .on_hover_text(e.selected_files.join("\n"));
-                    if let Some(more) = more {
-                        ui.label(small(more, GRAY_600));
-                    }
-                });
+            // File names, not paths: the folder is on the line above, and a
+            // full path per file is wider than the card.
+            let names: Vec<String> = e
+                .selected_files
+                .iter()
+                .map(|f| file_name(f).to_string())
+                .collect();
+            if let Some((list, more)) = spotlight_files_line(&names) {
+                let text = match more {
+                    Some(more) => format!("🗋 {list}{more}"),
+                    None => format!("🗋 {list}"),
+                };
+                ui.add(egui::Label::new(small(text, GRAY_400)).truncate())
+                    .on_hover_text(e.selected_files.join("\n"));
             }
         }
         None => {
@@ -180,6 +193,35 @@ fn context_lines(ui: &mut Ui, state: &AppState, file_manager: &str) {
                 GRAY_600,
             ));
         }
+    }
+}
+
+/// Last path component, accepting both separators.
+pub fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or(path)
+}
+
+/// A horizontal row centred in the available width. The row's width is
+/// measured each frame and used to place it on the next one, so the first
+/// frame after a size change is left-aligned and every later one is centred
+/// (egui lays out in one pass, so centring needs last frame's width).
+fn centered_row(ui: &mut Ui, id_salt: &str, add: impl FnOnce(&mut Ui)) {
+    let id = ui.id().with(id_salt);
+    let last_width: f32 = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(0.0);
+    let avail = ui.available_width();
+    let pad = ((avail - last_width) / 2.0).max(0.0);
+    let inner = ui.horizontal(|ui| {
+        ui.add_space(pad);
+        let start = ui.cursor().min.x;
+        add(ui);
+        ui.cursor().min.x - start
+    });
+    let width = inner.inner - ui.spacing().item_spacing.x;
+    if (width - last_width).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(id, width));
+        ui.ctx().request_repaint();
     }
 }
 
