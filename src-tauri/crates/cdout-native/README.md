@@ -30,6 +30,13 @@ the app talks to a scripted model instead of a provider.
 
 Logs: `<data dir>/logs/cdout-native.log` (`CDOUT_LOG` takes a tracing filter).
 
+GPU backend: on Windows the app uses DirectX 12 (Vulkan on this NVIDIA setup
+failed, and took the app down, whenever another process had filled the GPU's
+memory; DirectX pages instead). Other platforms use wgpu's default (Metal on
+macOS). To override anywhere, set `WGPU_BACKEND` before launching, e.g.
+`vulkan`, `dx12`, `metal` or `gl`; the chosen adapter is logged at startup as
+`gpu.adapter backend=…`.
+
 ## Test
 
 | Layer | Command (from `src-tauri/`) |
