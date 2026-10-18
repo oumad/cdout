@@ -1,0 +1,481 @@
+<#
+.SYNOPSIS
+  End-to-end smoke test of the native cdout app on Windows.
+
+.DESCRIPTION
+  Builds cdout with the scripted fake LLM, launches it against an
+  isolated temp data dir and a hotkey that cannot clash with an installed
+  cdout, then drives it with synthesized key presses and Windows UI
+  Automation (egui exposes its widgets through AccessKit). Every step is
+  checked against the app's log; failures print the log tail and exit 1.
+
+  Screenshots of the app's own windows (never the whole screen) are written
+  to -OutDir for visual inspection.
+
+.PARAMETER Scenarios
+  Any of: text, command, question, stop, markdown, hidden, crash. Default: all.
+
+.EXAMPLE
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-smoke.ps1
+#>
+param(
+    [string[]]$Scenarios = @("text", "command", "question", "stop", "markdown", "hidden", "crash"),
+    [string]$OutDir = "",
+    [switch]$NoBuild
+)
+
+$ErrorActionPreference = "Stop"
+$repo = Split-Path -Parent $PSScriptRoot
+$exe = Join-Path $repo "target\debug\cdout.exe"
+if (-not $OutDir) { $OutDir = Join-Path $env:TEMP "cdout-smoke" }
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+$Hotkey = "Ctrl+Alt+Shift+F9"
+
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class Smoke {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  public struct RECT { public int L, T, R, B; }
+  public class Win { public IntPtr H; public bool Visible; public int L, T, W, Hgt; }
+  public static List<Win> Windows(uint pid) {
+    var list = new List<Win>();
+    EnumWindows((h, l) => {
+      uint p; GetWindowThreadProcessId(h, out p);
+      var cls = new StringBuilder(64); GetClassNameW(h, cls, 64);
+      // The debug build's console window belongs to us too; it isn't UI.
+      if (p == pid && cls.ToString() != "ConsoleWindowClass") {
+        RECT r; GetWindowRect(h, out r);
+        list.Add(new Win { H = h, Visible = IsWindowVisible(h), L = r.L, T = r.T, W = r.R - r.L, Hgt = r.B - r.T });
+      }
+      return true;
+    }, IntPtr.Zero);
+    return list;
+  }
+  public static void Key(byte vk, bool up) { keybd_event(vk, 0, up ? 2u : 0u, UIntPtr.Zero); }
+  public static uint ForegroundPid() { uint p; GetWindowThreadProcessId(GetForegroundWindow(), out p); return p; }
+}
+"@
+[void][Smoke]::SetProcessDPIAware()
+
+$script:failures = @()
+$script:proc = $null
+$script:log = ""
+
+function Fail($msg) {
+    Write-Host "  FAIL: $msg" -ForegroundColor Red
+    $script:failures += $msg
+}
+
+function Pass($msg) { Write-Host "  ok: $msg" -ForegroundColor Green }
+
+function Wait-Log([string]$pattern, [int]$timeoutMs = 10000, [int]$after = 0) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
+        if (Test-Path $script:log) {
+            $lines = @(Get-Content $script:log -ErrorAction SilentlyContinue)
+            for ($i = $after; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -match $pattern) { return $i + 1 }
+            }
+        }
+        if ($script:proc.HasExited) { return -1 }
+        Start-Sleep -Milliseconds 100
+    }
+    return -1
+}
+
+function Expect([string]$pattern, [string]$what, [int]$timeoutMs = 10000) {
+    $n = Wait-Log $pattern $timeoutMs $script:cursor
+    if ($n -lt 0) { Fail "$what (no '$pattern' in log within ${timeoutMs}ms)"; return $false }
+    $script:cursor = $n
+    Pass $what
+    return $true
+}
+
+function Send-Chord {
+    # Ctrl+Alt+Shift+F9
+    foreach ($vk in 0x11, 0x12, 0x10, 0x78) { [Smoke]::Key($vk, $false) }
+    Start-Sleep -Milliseconds 60
+    foreach ($vk in 0x78, 0x10, 0x12, 0x11) { [Smoke]::Key($vk, $true) }
+}
+
+# Keystrokes go to whatever has focus. Refuse to send any unless a cdout
+# window owns the foreground, so a focus failure can never type into another
+# application on the tester's desktop.
+function Ours-Foreground([string]$what) {
+    $fg = [Smoke]::ForegroundPid()
+    if ($fg -eq $script:proc.Id) { return $true }
+    Fail "$what skipped: keyboard focus is in another process (pid $fg), not cdout"
+    return $false
+}
+
+function Send-Escape {
+    if (-not (Ours-Foreground "Escape")) { return }
+    [Smoke]::Key(0x1B, $false); Start-Sleep -Milliseconds 40; [Smoke]::Key(0x1B, $true)
+}
+
+function Visible-Windows {
+    @([Smoke]::Windows([uint32]$script:proc.Id) | Where-Object { $_.Visible -and $_.W -gt 100 -and $_.Hgt -gt 100 })
+}
+
+function Snap([string]$name, $win) {
+    if (-not $win) { Fail "no window to capture for $name"; return }
+    $b = New-Object System.Drawing.Bitmap $win.W, $win.Hgt
+    $g = [System.Drawing.Graphics]::FromImage($b)
+    $g.CopyFromScreen($win.L, $win.T, 0, 0, $b.Size)
+    $path = Join-Path $OutDir $name
+    $b.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+    $g.Dispose(); $b.Dispose()
+    Write-Host "  screenshot: $path"
+}
+
+# Pixels of a small screen region, for before/after comparisons.
+function Grab-Pixels([int]$x, [int]$y, [int]$w, [int]$h) {
+    $b = New-Object System.Drawing.Bitmap $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($b)
+    $g.CopyFromScreen($x, $y, 0, 0, $b.Size)
+    $px = @()
+    for ($j = 0; $j -lt $h; $j++) { for ($i = 0; $i -lt $w; $i++) { $px += $b.GetPixel($i, $j).ToArgb() } }
+    $g.Dispose(); $b.Dispose()
+    return ,$px
+}
+
+function Spotlight-Window { Visible-Windows | Where-Object { $_.W -lt 900 } | Select-Object -First 1 }
+function Main-Window { Visible-Windows | Where-Object { $_.W -ge 900 } | Select-Object -First 1 }
+
+# Find a UI element of our process by accessible name (wildcards allowed),
+# retrying while AccessKit builds its tree.
+function Find-Element([string]$namePattern, [int]$timeoutMs = 6000) {
+    $AE = [System.Windows.Automation.AutomationElement]
+    $cond = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $script:proc.Id)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
+        $wins = $AE::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
+        foreach ($w in $wins) {
+            $all = $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+            foreach ($e in $all) {
+                # -clike: case-sensitive, so "Answer" never matches "your own answer".
+                if ($e.Current.Name -clike $namePattern) { return $e }
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return $null
+}
+
+function Click-Element([string]$namePattern, [string]$what) {
+    $e = Find-Element $namePattern
+    if (-not $e) { Fail "$what (no element named '$namePattern')"; return $false }
+    $invoke = $null
+    if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+        $invoke.Invoke()
+    } else {
+        $sel = $null
+        if ($e.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$sel)) {
+            $sel.Select()
+        } else {
+            Fail "$what (element '$namePattern' has no invoke pattern)"; return $false
+        }
+    }
+    Pass $what
+    return $true
+}
+
+function Start-App([string]$scenario, [hashtable]$config, [hashtable]$ExtraEnv = @{}) {
+    $data = Join-Path $env:TEMP ("cdout-smoke-" + $scenario + "-" + [guid]::NewGuid().ToString("N").Substring(0, 6))
+    New-Item -ItemType Directory -Force -Path $data | Out-Null
+    if ($config) {
+        # No BOM: serde_json rejects one, and PowerShell 5's UTF8 adds it.
+        [IO.File]::WriteAllText((Join-Path $data "cdout_config.json"), ($config | ConvertTo-Json))
+    }
+    $env:CDOUT_DATA_DIR = $data
+    $env:CDOUT_HOTKEY = $Hotkey
+    $env:CDOUT_FAKE_LLM = $scenario
+    $env:CDOUT_FAKE_LLM_DELAY_MS = "40"
+    Remove-Item Env:CDOUT_TEST_PANIC_MS -ErrorAction SilentlyContinue
+    foreach ($k in $ExtraEnv.Keys) { Set-Item "env:$k" $ExtraEnv[$k] }
+    $script:log = Join-Path $data "logs\cdout.log"
+    $script:cursor = 0
+    $script:proc = Start-Process -FilePath $exe -PassThru -RedirectStandardError (Join-Path $data "stderr.txt") -RedirectStandardOutput (Join-Path $data "stdout.txt")
+    Write-Host "  pid=$($script:proc.Id) data=$data"
+    return $data
+}
+
+function Stop-App($data) {
+    if ($script:proc -and -not $script:proc.HasExited) {
+        Stop-Process -Id $script:proc.Id -Force
+        $script:proc.WaitForExit(3000) | Out-Null
+    }
+    $panics = Select-String -Path $script:log -Pattern "app.panic" -ErrorAction SilentlyContinue | Where-Object { $_.Line -notmatch "CDOUT_TEST_PANIC_MS" }
+    if ($panics) { Fail "panic logged: $($panics[0].Line)" }
+    if ($script:failures.Count -gt 0) {
+        Write-Host "  --- log tail ---"
+        Get-Content $script:log -Tail 25 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+        Write-Host "  --- stderr tail ---"
+        Get-Content (Join-Path $data "stderr.txt") -Tail 10 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+    }
+}
+
+function Type-Text([string]$text) {
+    if (-not (Ours-Foreground "typing '$text'")) { return }
+    [System.Windows.Forms.SendKeys]::SendWait($text)
+    Start-Sleep -Milliseconds 150
+}
+
+function Describe-Windows {
+    (Visible-Windows | ForEach-Object { "$($_.W)x$($_.Hgt) at $($_.L),$($_.T)" }) -join "; "
+}
+
+# Common opening: app up, hotkey works, Escape hides, submit a prompt.
+function Open-Spotlight-And-Submit([string]$scenario, [string]$prompt) {
+    if (-not (Expect "app\.start" "app started")) { return $false }
+    if (-not (Expect "tray\.created" "tray icon created")) { return $false }
+    if (-not (Expect "hotkey\.registered chord=$([regex]::Escape($Hotkey))" "hotkey registered")) { return $false }
+    if (-not (Expect "main\.shown" "main window shown at launch")) { return $false }
+    Start-Sleep -Milliseconds 800
+
+    Send-Chord
+    if (-not (Expect "spotlight\.shown" "hotkey shows the spotlight" 3000)) { return $false }
+    if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus" 2000)) { return $false }
+    Start-Sleep -Milliseconds 300
+    $sp = Spotlight-Window
+    if ($sp) { Pass "spotlight window visible ($($sp.W)x$($sp.Hgt))" } else { Fail "spotlight window not visible" }
+    Snap "$scenario-1-spotlight.png" $sp
+    # The window is the card (no transparent margin on Windows): pixels just
+    # inside the left and top edges must be the card colour (gray-900), not a
+    # white or black fill.
+    if ($sp) {
+        $edge = Grab-Pixels ($sp.L + 4) ($sp.T + [int]($sp.Hgt / 2)) 1 1
+        $top = Grab-Pixels ($sp.L + [int]($sp.W / 2)) ($sp.T + 4) 1 1
+        $ok = $true
+        foreach ($argb in @($edge[0], $top[0])) {
+            $c = [System.Drawing.Color]::FromArgb($argb)
+            if ([Math]::Abs($c.R - 17) -gt 12 -or [Math]::Abs($c.G - 24) -gt 12 -or [Math]::Abs($c.B - 39) -gt 12) {
+                $ok = $false; Fail "spotlight edge pixel is R$($c.R) G$($c.G) B$($c.B), expected the card colour"
+            }
+        }
+        if ($ok) { Pass "spotlight window is the card (edges are card-coloured)" }
+    }
+
+    Send-Escape
+    if (-not (Expect "spotlight\.hidden reason=escape" "Escape hides the spotlight" 3000)) { return $false }
+    Start-Sleep -Milliseconds 400
+    if (Spotlight-Window) { Fail "spotlight still visible after Escape" } else { Pass "spotlight window gone" }
+
+    Send-Chord
+    if (-not (Expect "spotlight\.shown" "hotkey shows it again" 3000)) { return $false }
+    if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus again" 2000)) { return $false }
+    Start-Sleep -Milliseconds 300
+    Type-Text $prompt
+    Snap "$scenario-2-typed.png" (Spotlight-Window)
+    Type-Text "{ENTER}"
+    if (-not (Expect "spotlight\.submitted" "Enter submits")) { return $false }
+    if (-not (Expect "spotlight\.hidden reason=submit" "spotlight hides on submit" 3000)) { return $false }
+    if (-not (Expect "agent\.step\.start" "first agent step starts")) { return $false }
+    return $true
+}
+
+function Scenario-Text {
+    $data = Start-App "text" $null
+    try {
+        if (Open-Spotlight-And-Submit "text" "hello cdout") {
+            Expect "agent\.stream\.delta" "text streams in" | Out-Null
+            Expect "agent\.step\.done kind=text" "step completes with text" | Out-Null
+            Start-Sleep -Milliseconds 800
+            Snap "text-3-main.png" (Main-Window)
+            $sessions = @(Get-ChildItem (Join-Path $data "sessions") -Filter *.json -ErrorAction SilentlyContinue)
+            Start-Sleep -Milliseconds 900
+            $sessions = @(Get-ChildItem (Join-Path $data "sessions") -Filter *.json -ErrorAction SilentlyContinue)
+            if ($sessions.Count -eq 1) {
+                $json = Get-Content $sessions[0].FullName -Raw
+                if ($json -match "Hello from the fake model\.") { Pass "session saved with the reply" } else { Fail "session file lacks the streamed reply" }
+            } else { Fail "expected 1 session file in the isolated data dir, found $($sessions.Count)" }
+        }
+    } finally { Stop-App $data }
+}
+
+function Scenario-Command {
+    $data = Start-App "command" @{ approval_mode = "ask" }
+    try {
+        if (Open-Spotlight-And-Submit "command" "run something") {
+            Expect "agent\.step\.done kind=command" "model proposes a command" | Out-Null
+            Start-Sleep -Milliseconds 800
+            Snap "command-3-approval.png" (Main-Window)
+            Click-Element "*Execute*" "click Execute on the approval card" | Out-Null
+            Expect "exec\.start kind=approved" "approved command starts" | Out-Null
+            Expect "exec\.done ok=true" "command finishes" 15000 | Out-Null
+            Expect "agent\.step\.done kind=text" "agent continues after the result" | Out-Null
+            Start-Sleep -Milliseconds 600
+            Snap "command-4-done.png" (Main-Window)
+        }
+    } finally { Stop-App $data }
+}
+
+function Scenario-Question {
+    $data = Start-App "question" $null
+    try {
+        if (Open-Spotlight-And-Submit "question" "convert these") {
+            Expect "agent\.step\.done kind=question" "model asks a question" | Out-Null
+            Start-Sleep -Milliseconds 800
+            Snap "question-3-card.png" (Main-Window)
+            Click-Element "mp4" "pick the mp4 option" | Out-Null
+            Start-Sleep -Milliseconds 500
+            Snap "question-4-picked.png" (Main-Window)
+            Click-Element "Answer" "click Answer" | Out-Null
+            Expect "agent\.step\.start" "answer starts the next step" | Out-Null
+            Expect "agent\.step\.done kind=text" "agent continues after the answer" | Out-Null
+        }
+    } finally { Stop-App $data }
+}
+
+# Close the main window to the tray, then use the hotkey with every window
+# hidden: the path that only works because orchestration runs in App::logic.
+function Scenario-Hidden {
+    $data = Start-App "text" $null
+    try {
+        if (-not (Expect "app\.start" "app started")) { return }
+        if (-not (Expect "hotkey\.registered" "hotkey registered")) { return }
+        if (-not (Expect "main\.shown" "main window shown at launch")) { return }
+        Start-Sleep -Milliseconds 900
+        Click-Element "Close" "click the title bar's Close" | Out-Null
+        Expect "main\.hidden" "Close hides the main window to the tray" 3000 | Out-Null
+        Start-Sleep -Milliseconds 600
+        if (Visible-Windows) { Fail "a window is still visible after Close: $(Describe-Windows)" } else { Pass "no window visible" }
+        Send-Chord
+        if (-not (Expect "spotlight\.shown" "hotkey works with every window hidden" 3000)) { return }
+        if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus" 2000)) { return }
+        Start-Sleep -Milliseconds 300
+        Type-Text "from the tray"
+        Type-Text "{ENTER}"
+        Expect "spotlight\.submitted" "submit from the spotlight" | Out-Null
+        Expect "main\.shown" "submitting brings the main window back" | Out-Null
+        Expect "agent\.step\.done kind=text" "the task runs" | Out-Null
+        Start-Sleep -Milliseconds 600
+        if (Main-Window) { Pass "main window visible again" } else { Fail "main window did not come back" }
+    } finally { Stop-App $data }
+}
+
+# A panic on the UI thread must relaunch the app with the draft restored.
+function Scenario-Crash {
+    $data = Start-App "text" $null -ExtraEnv @{ CDOUT_TEST_PANIC_MS = "7000" }
+    $firstPid = $script:proc.Id
+    try {
+        if (-not (Expect "app\.start" "app started")) { return }
+        if (-not (Expect "hotkey\.registered" "hotkey registered")) { return }
+        if (-not (Expect "main\.shown" "main window shown at launch")) { return }
+        Start-Sleep -Milliseconds 800
+        Send-Chord
+        if (-not (Expect "spotlight\.shown" "hotkey shows the spotlight" 3000)) { return }
+        if (-not (Expect "spotlight\.focused" "spotlight takes keyboard focus" 2000)) { return }
+        Start-Sleep -Milliseconds 300
+        Type-Text "keep me"
+        Start-Sleep -Milliseconds 700   # past the 400 ms draft debounce
+        if ((Get-Content (Join-Path $data "spotlight_draft.txt") -ErrorAction SilentlyContinue) -eq "keep me") { Pass "draft written to disk while typing" } else { Fail "draft file missing or wrong" }
+
+        if (-not (Expect "app\.panic CDOUT_TEST_PANIC_MS" "simulated crash happened" 12000)) { return }
+        if (-not (Expect "crash\.restart spawned pid=(\d+)" "crash handler relaunched the app" 3000)) { return }
+        $script:proc.WaitForExit(5000) | Out-Null
+        if ($script:proc.HasExited) { Pass "crashed process exited" } else { Fail "crashed process still alive" }
+
+        # Adopt the new process so Stop-App and the foreground guard track it.
+        $newProc = $null
+        for ($i = 0; $i -lt 30 -and -not $newProc; $i++) {
+            Start-Sleep -Milliseconds 200
+            $newProc = Get-Process -Name "cdout" -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $firstPid -and $_.Path -eq $exe } | Select-Object -First 1
+        }
+        if (-not $newProc) { Fail "no relaunched process found"; return }
+        $script:proc = $newProc
+        Pass "relaunched process pid=$($newProc.Id)"
+        if (-not (Expect "app\.start .*restarted=true" "new instance knows it was restarted" 10000)) { return }
+        if (-not (Expect "spotlight\.shown" "spotlight comes back on its own" 8000)) { return }
+        if (-not (Expect "spotlight\.focused" "restored spotlight takes keyboard focus" 3000)) { return }
+        # The toast lives on the main window (UIA can see it) for 8 s.
+        if (Find-Element "*restarted after a crash*" 4000) { Pass "restart notice shown" } else { Fail "restart notice not shown" }
+        # The spotlight is a child viewport with no UIA tree, so prove the
+        # restored text by submitting it: the session file must contain it.
+        Start-Sleep -Milliseconds 300
+        Type-Text "{ENTER}"
+        if (-not (Expect "spotlight\.submitted" "restored prompt submits")) { return }
+        Expect "agent\.step\.done kind=text" "task runs after the restart" | Out-Null
+        Start-Sleep -Milliseconds 1200
+        $json = (Get-ChildItem (Join-Path $data "sessions") -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+        if ($json -match '"keep me"') { Pass "the restored text was what got submitted" } else { Fail "session does not contain the restored prompt" }
+        if (Test-Path (Join-Path $data "spotlight_draft.txt")) { Fail "draft file still present after submit" } else { Pass "draft cleared after submit" }
+        if ($script:proc.HasExited) { Fail "relaunched instance died" } else { Pass "relaunched instance keeps running" }
+        Snap "crash-1-after.png" (Main-Window)
+    } finally { Stop-App $data }
+}
+
+function Scenario-Markdown {
+    $data = Start-App "markdown" $null
+    try {
+        if (Open-Spotlight-And-Submit "markdown" "show me markdown") {
+            Expect "agent\.step\.done kind=text" "rich reply completes" | Out-Null
+            if ((Wait-Log "fonts\.loaded segoe-ui" 1000 0) -gt 0) { Pass "system fonts loaded" } else { Fail "Segoe UI not loaded" }
+            Start-Sleep -Milliseconds 900
+            Snap "markdown-3-main.png" (Main-Window)
+        }
+    } finally { Stop-App $data }
+}
+
+function Scenario-Stop {
+    $data = Start-App "long" $null
+    try {
+        if (Open-Spotlight-And-Submit "stop" "write a lot") {
+            Expect "agent\.stream\.delta" "long reply streaming" | Out-Null
+            Start-Sleep -Milliseconds 700
+            Click-Element "Stop" "click Stop mid-stream" | Out-Null
+            Start-Sleep -Milliseconds 1200
+            Snap "stop-3-stopped.png" (Main-Window)
+            if (Find-Element "*CDOUT INTERNAL*" 3000) { Pass "interrupt note shown" } else { Fail "interrupt note not shown" }
+        }
+    } finally { Stop-App $data }
+}
+
+if (-not $NoBuild) {
+    Write-Host "== build cdout (fake-llm)"
+    Push-Location $repo
+    try {
+        cargo build -p cdout --features fake-llm
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    } finally { Pop-Location }
+}
+if (-not (Test-Path $exe)) { throw "missing $exe" }
+
+foreach ($s in $Scenarios) {
+    Write-Host "== scenario: $s"
+    switch ($s) {
+        "text" { Scenario-Text }
+        "command" { Scenario-Command }
+        "question" { Scenario-Question }
+        "stop" { Scenario-Stop }
+        "markdown" { Scenario-Markdown }
+        "hidden" { Scenario-Hidden }
+        "crash" { Scenario-Crash }
+        default { Fail "unknown scenario $s" }
+    }
+}
+
+Write-Host ""
+if ($script:failures.Count -gt 0) {
+    Write-Host "SMOKE FAILED ($($script:failures.Count)):" -ForegroundColor Red
+    $script:failures | ForEach-Object { Write-Host " - $_" }
+    exit 1
+}
+Write-Host "SMOKE PASSED. Screenshots in $OutDir" -ForegroundColor Green
+exit 0

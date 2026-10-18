@@ -1,10 +1,9 @@
 name: CI
 
 # Runs the test suites on both supported platforms. The release workflow only
-# proves the app *builds*; this proves it works — and it is the only thing that
+# proves the app *builds*; this proves it works, and it is the only thing that
 # type-checks the Windows COM code and the macOS AppleScript code against each
-# other, since the platform split means half the backend is `cfg`-ed out on any
-# single machine.
+# other, since half of the platform layer is `cfg`-ed out on any single machine.
 
 on:
   push:
@@ -30,12 +29,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -44,29 +37,23 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
           key: ${{ matrix.os }}-ci
 
-      # The Rust crate needs no webview toolchain to compile the lib target,
-      # but tauri-build still reads tauri.conf.json, so the frontend deps have
-      # to exist first.
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Typecheck frontend
-        run: npx tsc --noEmit
-
-      - name: Frontend tests
-        run: npm test
-
-      - name: Backend tests
-        run: cargo test --lib
-        working-directory: ./src-tauri
+      # Unit tests of both crates, plus the app's headless screen tests and
+      # glyph coverage. Pixel snapshots are compared only locally: CI GPUs
+      # (WARP, Metal) render slightly differently from the machine that
+      # recorded them.
+      - name: Tests
+        run: cargo test --workspace
+        env:
+          CDOUT_SKIP_SNAPSHOTS: "1"
 
       - name: Clippy
-        run: cargo clippy --lib --all-targets -- -D warnings
-        working-directory: ./src-tauri
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # The scripted model behind scripts/native-smoke.ps1 must keep compiling.
+      - name: Clippy (fake-llm)
+        run: cargo clippy -p cdout --features fake-llm --all-targets -- -D warnings
 
       - name: Formatting
-        run: cargo fmt --check
-        working-directory: ./src-tauri
+        run: cargo fmt --all --check
