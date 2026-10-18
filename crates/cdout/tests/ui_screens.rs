@@ -697,14 +697,23 @@ fn settings_list_signed_in_subscriptions() {
             cli_status(Backend::ClaudeCode, true, true),
             cli_status(Backend::Codex, true, false),
         ],
+        ollama_reachable: true,
+        ollama_model_count: 3,
         any_usable: true,
         ..Default::default()
     });
+    s.settings.keys = Default::default();
     let mut h = main_window(s);
     h.run();
-    h.get_by_label("Subscriptions");
+    h.get_by_label("Sign in with a subscription");
     h.get_by_label("signed in · Max plan");
     h.get_by_label("codex login");
+    h.get_by_label("running · 3 models");
+    // With no key set, the API keys section starts collapsed.
+    assert_eq!(h.query_all_by_label("OpenRouter API Key").count(), 0);
+    h.get_by_label("API keys (pay per use)").click();
+    h.run();
+    assert!(h.query_all_by_label("OpenRouter API Key").count() > 0);
 }
 
 #[test]

@@ -366,20 +366,23 @@ fn providers(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
     header(
         ui,
         "Providers",
-        "Configure where cdout sends model requests.",
+        "cdout can use any of these; set up one or more, then pick the model in the picker.",
     );
     sub(
         ui,
-        "Subscriptions",
-        "Agent CLIs signed in on this machine. cdout runs them with their own tools switched off, so your plan covers the usage and every command still waits for your approval.",
+        "Sign in with a subscription",
+        "Claude Code or Codex, signed in on this machine. cdout runs the CLI with its own tools switched off, so your plan covers the usage and every command still waits for your approval.",
     );
     super::onboarding::subscription_rows(ui, state, out);
-    let s = &mut state.settings;
+
     sub(
         ui,
-        "Local",
-        "Self-hosted models on your own machine. Stays airtight — prompts never leave the box.",
+        "Run locally",
+        "Ollama on this machine or another one on your network. Prompts never leave your hardware.",
     );
+    ollama_status_row(ui, state);
+    let s = &mut state.settings;
+    ui.add_space(4.0);
     ui.label(
         RichText::new("Ollama Server URL")
             .size(12.0)
@@ -398,7 +401,23 @@ fn providers(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
         "Defaults to http://localhost:11434. Ollama models are prefixed `ollama:` in the picker.",
     );
 
-    sub(ui, "API keys", "Pay-per-use keys for hosted providers, stored locally in your config. Prompts go through openrouter.ai, or straight to Anthropic with an Anthropic key.");
+    ui.add_space(8.0);
+    // Collapsed unless a key is already set: most people never need one.
+    let any_key = s.keys.openrouter_set || s.keys.anthropic_set;
+    egui::CollapsingHeader::new(
+        RichText::new("API keys (pay per use)")
+            .size(14.0)
+            .strong()
+            .color(GRAY_200),
+    )
+    .id_salt("settings-api-keys")
+    .default_open(any_key)
+    .show(ui, |ui| api_keys(ui, s, out));
+}
+
+/// Keys for hosted providers, billed per request.
+fn api_keys(ui: &mut Ui, s: &mut crate::state::SettingsState, out: &mut Vec<Msg>) {
+    hint(ui, "For when you have no subscription or local model, or want direct API speed. Stored locally in your config. Prompts go through openrouter.ai, or straight to Anthropic with an Anthropic key.");
     key_field(
         ui,
         "OpenRouter API Key",
@@ -435,6 +454,32 @@ fn providers(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
         if r.clicked() {
             out.push(Msg::ToggleShowFree);
         }
+    });
+}
+
+/// Same shape as a subscription row: a coloured dot and what was found.
+fn ollama_status_row(ui: &mut Ui, state: &AppState) {
+    let (color, text) = match &state.provider_status {
+        None => (GRAY_600, "checking…".to_string()),
+        Some(p) if p.ollama_reachable && p.ollama_model_count > 0 => (
+            EMERALD_500,
+            format!(
+                "running · {} model{}",
+                p.ollama_model_count,
+                if p.ollama_model_count == 1 { "" } else { "s" }
+            ),
+        ),
+        Some(p) if p.ollama_reachable => (AMBER_400, "running, no models pulled yet".to_string()),
+        Some(_) => (
+            GRAY_600,
+            format!("not found at {}", state.settings.ollama_url),
+        ),
+    };
+    ui.horizontal_wrapped(|ui| {
+        let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+        ui.painter().circle_filled(dot.center(), 3.5, color);
+        ui.label(RichText::new("Ollama").size(12.0).strong().color(GRAY_200));
+        ui.label(RichText::new(text).size(11.0).color(color));
     });
 }
 
