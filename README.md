@@ -85,8 +85,11 @@ Any one of these is enough; cdout picks up whatever is available at launch.
    the machine, there is nothing to configure: its models appear under "Your
    subscriptions" and cdout selects one. cdout runs the official CLI in
    headless mode with its own tools switched off, so your plan covers the
-   usage and every command still waits for your approval. Not signed in yet?
-   Run `claude` (or `codex login`) once in a terminal.
+   usage and every command still waits for your approval. Installed but not
+   signed in? Click **Sign in** next to it (first-run screen or Settings →
+   Providers): cdout opens the CLI's own login in a terminal window, notices
+   when it finishes and switches to it. Signing in beforehand with `claude`
+   or `codex login` works just as well.
 2. **Ollama (local)** — if `ollama serve` is running on `localhost:11434`,
    your local models appear under "Local (Ollama)". Change the URL in
    Settings if Ollama lives elsewhere.
@@ -155,7 +158,7 @@ Two crates in one Cargo workspace:
 | `llm/mod.rs` | `Message`, `ToolCall`, `ToolDefinition`, `StreamChunk` types |
 | `llm/clients/ollama.rs` | Local Ollama client (streaming, NDJSON) |
 | `llm/clients/anthropic.rs` | Direct Anthropic API-key client (prompt caching + `compact-2026-01-12` beta for 4.6+ models) |
-| `llm/clients/cli.rs` | Claude Code and Codex as providers: detection (`claude auth status`, `codex login status`), one headless run per step with the CLI's tools off, and a text tool protocol (a fenced `tool` block parsed back into native `tool_calls`, hidden from the stream) |
+| `llm/clients/cli.rs` | Claude Code and Codex as providers: detection (`claude auth status`, `codex login status`), a Sign in action that opens the CLI's own login in a terminal, one headless run per step with the CLI's tools off, and a text tool protocol (a fenced `tool` block parsed back into native `tool_calls`, hidden from the stream) |
 | `llm/clients/openrouter.rs` | OpenAI-compatible OpenRouter client. Pins `allow_fallbacks: false`, `quantizations: ["fp8","bf16","fp16"]`, `data_collection: "deny"` on every request |
 | `llm/fake.rs` | Scripted model behind the `fake-llm` feature; what the end-to-end smoke test talks to |
 | `features/agent.rs` | Agent loop, tool-proposal extraction (native `tool_calls` first, code-block + raw-text fallbacks), context-overflow recovery, the `ChunkSink` streaming trait |
@@ -555,8 +558,9 @@ memory; cdout uses DirectX 12 there, which survives that, and
 `WGPU_BACKEND=vulkan|dx12|metal|gl` overrides the choice if you need to.
 
 **Claude Code or Codex does not show up in the picker.** Settings →
-Providers → Subscriptions says what cdout found: not installed, installed but
-not signed in (run `claude` or `codex login` once in a terminal), or signed in.
+Providers → Subscriptions says what cdout found: not installed (with a link
+to get it), installed but not signed in (with a **Sign in** button), or
+signed in.
 cdout looks on PATH and in the usual install folders; a CLI installed
 somewhere else needs its folder on PATH.
 
@@ -591,9 +595,10 @@ result now says so explicitly.
 - **Subscription steps are slower than an API.** Each step starts the CLI
   afresh (a few seconds for Claude Code). Codex follows your Codex config's
   model and reasoning effort; a high effort can take half a minute per step.
-- **Gemini CLI and Grok are not wired up yet.** The CLI backend is generic
-  enough to add them; each needs its headless output format checked on a
-  signed-in machine first.
+- **No Gemini or Grok subscription path.** Gemini CLI's Google sign-in no
+  longer works for individuals (Google sends them to Antigravity), which
+  leaves it API-key only, and Gemini models are already reachable through an
+  OpenRouter key. There is no Grok CLI with subscription sign-in to drive.
 - **OpenRouter outage recovery is manual.** No auto-failover to direct
   Anthropic — we surface a clear "service issue, not your key" error
   instead.

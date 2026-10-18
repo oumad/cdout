@@ -25,6 +25,7 @@ use cdout_core::api::{ListSkillsResult, MaskedApiKeys, PlatformInfo, ProviderSta
 use cdout_core::features::agent::{AgentStepResult, QuestionData};
 use cdout_core::features::explorer::ExplorerState;
 use cdout_core::features::sessions::{Session, SessionMeta};
+use cdout_core::llm::clients::cli::Backend;
 use cdout_core::llm::Message;
 use cdout_core::tools::risk::CommandRisk;
 use cdout_core::tools::shell::RunningCommand;
@@ -42,6 +43,8 @@ pub const DRAFT_DEBOUNCE: Duration = Duration::from_millis(400);
 pub const RESTARTED_NOTICE: &str =
     "cdout restarted after a crash. Your prompt was kept; details are in the log.";
 pub const MODEL_POLL: Duration = Duration::from_millis(5000);
+/// How long to keep checking for a sign-in started from cdout.
+pub const SIGN_IN_WATCH: Duration = Duration::from_secs(300);
 pub const MAX_AUTO_STEPS: u32 = 10;
 pub const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 pub const FILE_LIST_THRESHOLD: usize = 20;
@@ -265,6 +268,8 @@ pub struct AppState {
     pub explorer: Option<ExplorerState>,
     pub explorer_loading: bool,
     pub provider_status: Option<ProviderStatus>,
+    /// A CLI sign-in window was opened: watch for it to finish until then.
+    pub sign_in: Option<(Backend, Instant)>,
     pub toast: Option<Toast>,
     pub quitting: bool,
 }
@@ -393,6 +398,7 @@ pub enum Msg {
     OnboardingSaveKey(String),
     OnboardingSaveOllamaUrl(String),
     OnboardingRecheck,
+    SignInCli(Backend),
     OpenFileAccessSettings,
     LoadExplorerDebug,
     OpenUrl(String),
@@ -469,6 +475,7 @@ pub enum Msg {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
+    OpenCliSignIn(Backend),
     // Windows and process (main thread)
     ShowSpotlight,
     HideSpotlight(HideReason),
@@ -560,6 +567,7 @@ impl AppState {
             explorer: None,
             explorer_loading: false,
             provider_status: None,
+            sign_in: None,
             toast: None,
             quitting: false,
         }
@@ -676,6 +684,13 @@ impl AppState {
             Msg::OnboardingSaveOllamaUrl(url) => {
                 fx.push(Effect::SaveOllamaUrl(url.trim().to_string()))
             }
+            Msg::SignInCli(backend) => {
+                self.sign_in = Some((backend, now + SIGN_IN_WATCH));
+                fx.push(Effect::OpenCliSignIn(backend));
+                if self.models.next_poll.is_none() {
+                    self.models.next_poll = Some(now + MODEL_POLL);
+                }
+            }
             Msg::OnboardingRecheck => {
                 self.fetch_models(fx);
                 fx.push(Effect::FetchProviderStatus);
@@ -733,7 +748,7 @@ impl AppState {
             Msg::SelectedModelLoaded(saved) => self.on_selected_model(saved, fx),
             Msg::ProviderStatusLoaded(result) => {
                 if let Ok(status) = result {
-                    self.provider_status = Some(status);
+                    self.on_provider_status(status, now, fx);
                 }
             }
             Msg::SessionsListed(result) => match result {
@@ -908,10 +923,13 @@ impl AppState {
         }
         if self.models.next_poll.is_some_and(|at| now >= at) {
             self.models.next_poll = None;
+            if self.sign_in.is_some_and(|(_, until)| now >= until) {
+                self.sign_in = None;
+            }
             if self.should_poll_models() {
                 self.fetch_models(fx);
             }
-            if self.models.available.is_empty() {
+            if self.models.available.is_empty() || self.sign_in.is_some() {
                 fx.push(Effect::FetchProviderStatus);
             }
             self.schedule_poll(now);

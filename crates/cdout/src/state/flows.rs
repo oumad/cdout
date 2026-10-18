@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use cdout_core::api::MaskedApiKeys;
+use cdout_core::api::{MaskedApiKeys, ProviderStatus};
 use cdout_core::features::explorer::ExplorerState;
 use cdout_core::features::sessions::Session;
 
@@ -253,6 +253,35 @@ impl AppState {
 
     // --- models ---
 
+    /// New provider status. When it shows a sign-in started from cdout has
+    /// finished, switch to that CLI's model: the user just asked for it.
+    pub(super) fn on_provider_status(
+        &mut self,
+        status: ProviderStatus,
+        now: Instant,
+        fx: &mut Vec<Effect>,
+    ) {
+        if let Some((backend, _)) = self.sign_in {
+            let done = status
+                .subscriptions
+                .iter()
+                .any(|s| s.backend == backend && s.signed_in);
+            if done {
+                self.sign_in = None;
+                if let Some(model) = backend.models().first() {
+                    self.select_model(model.to_string(), fx);
+                }
+                self.models.inflight = false;
+                self.fetch_models(fx);
+                self.show_toast(
+                    format!("Signed in to {}. cdout will use it now.", backend.name()),
+                    now,
+                );
+            }
+        }
+        self.provider_status = Some(status);
+    }
+
     pub(super) fn fetch_models(&mut self, fx: &mut Vec<Effect>) {
         if self.models.inflight {
             return;
@@ -269,7 +298,8 @@ impl AppState {
     pub(super) fn schedule_poll(&mut self, now: Instant) {
         let poll = self.should_poll_models()
             || self.models.connected.is_none()
-            || self.models.available.is_empty();
+            || self.models.available.is_empty()
+            || self.sign_in.is_some();
         self.models.next_poll = poll.then(|| now + MODEL_POLL);
     }
 

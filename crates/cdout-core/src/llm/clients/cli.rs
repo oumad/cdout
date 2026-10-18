@@ -67,6 +67,14 @@ impl Backend {
         }
     }
 
+    /// Arguments that start the CLI's own sign-in flow.
+    fn sign_in_args(self) -> &'static [&'static str] {
+        match self {
+            Backend::ClaudeCode => &["auth", "login"],
+            Backend::Codex => &["login"],
+        }
+    }
+
     pub fn install_url(self) -> &'static str {
         match self {
             Backend::ClaudeCode => "https://code.claude.com/docs/en/setup",
@@ -212,6 +220,98 @@ pub fn parse_codex_login(success: bool, stdout: &str, stderr: &str) -> (bool, St
     } else {
         (true, "API key".into())
     }
+}
+
+/// Open a terminal window running the CLI's own sign-in (`claude auth
+/// login`, `codex login`), which takes the user through the provider's
+/// browser login. cdout only starts it; the CLI stores its own credentials.
+pub fn open_sign_in(backend: Backend) -> Result<(), String> {
+    let bin = find_binary(backend.binary())
+        .ok_or_else(|| format!("{} is not installed.", backend.name()))?;
+    open_in_terminal(&bin, backend.sign_in_args())
+}
+
+/// Run `bin args` in a new, visible terminal window that stays open when it
+/// finishes, so the user can read the outcome.
+pub fn open_in_terminal(bin: &Path, args: &[&str]) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // CreateProcessW rather than std::process::Command: Command always
+        // hands the child our standard handles, and a console program writes
+        // to those instead of the new window it was given, which then shows
+        // nothing. Without STARTF_USESTDHANDLES and with no inheritance, the
+        // new console's own handles are used.
+        use windows::core::{PCWSTR, PWSTR};
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            CreateProcessW, CREATE_NEW_CONSOLE, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+        let mut line: Vec<u16> = format!("cmd.exe {}", windows_terminal_line(bin, args))
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let startup = STARTUPINFOW {
+            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
+        let mut info = PROCESS_INFORMATION::default();
+        // SAFETY: `line` is a NUL-terminated, writable UTF-16 buffer that
+        // outlives the call, as CreateProcessW requires; the structs are
+        // initialised and `info` receives two handles, closed right after.
+        unsafe {
+            CreateProcessW(
+                PCWSTR::null(),
+                PWSTR(line.as_mut_ptr()),
+                None,
+                None,
+                false,
+                CREATE_NEW_CONSOLE,
+                None,
+                PCWSTR::null(),
+                &startup,
+                &mut info,
+            )
+            .map_err(|e| format!("Could not open a terminal: {e}"))?;
+            let _ = CloseHandle(info.hProcess);
+            let _ = CloseHandle(info.hThread);
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("osascript")
+            .args(["-e", &macos_terminal_script(bin, args)])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Could not open Terminal: {e}"))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (bin, args);
+        Err("Open a terminal and sign in there.".into())
+    }
+}
+
+/// `cmd.exe` arguments for running the CLI then waiting for a key. `/c` with
+/// the whole line in an extra pair of quotes is how cmd accepts a quoted
+/// program path followed by more quoted text.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_terminal_line(bin: &Path, args: &[&str]) -> String {
+    format!(
+        "/c \"\"{}\" {} & echo. & pause\"",
+        bin.display(),
+        args.join(" ")
+    )
+}
+
+/// AppleScript that opens Terminal on the CLI, the path single-quoted for
+/// the shell and the whole command escaped for the AppleScript string.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_terminal_script(bin: &Path, args: &[&str]) -> String {
+    let path = bin.display().to_string().replace('\'', "'\\''");
+    let shell = format!("'{}' {}", path, args.join(" "));
+    let escaped = shell.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("tell application \"Terminal\"\n  activate\n  do script \"{escaped}\"\nend tell")
 }
 
 // --- Processes ---
@@ -1074,6 +1174,20 @@ mod tests {
         assert!(e.contains("running `claude` in a terminal"), "{e}");
         let e = explain_failure(Backend::Codex, "usage limit reached");
         assert_eq!(e, "Codex: usage limit reached");
+    }
+
+    #[test]
+    fn terminal_command_lines() {
+        let bin = Path::new(r"C:\Program Files\Claude\claude.exe");
+        assert_eq!(
+            windows_terminal_line(bin, &["auth", "login"]),
+            r#"/c ""C:\Program Files\Claude\claude.exe" auth login & echo. & pause""#
+        );
+        let bin = Path::new("/Users/o'neil/.local/bin/claude");
+        assert_eq!(
+            macos_terminal_script(bin, &["auth", "login"]),
+            "tell application \"Terminal\"\n  activate\n  do script \"'/Users/o'\\\\''neil/.local/bin/claude' auth login\"\nend tell"
+        );
     }
 
     #[test]

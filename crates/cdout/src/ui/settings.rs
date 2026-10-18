@@ -373,14 +373,7 @@ fn providers(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
         "Subscriptions",
         "Agent CLIs signed in on this machine. cdout runs them with their own tools switched off, so your plan covers the usage and every command still waits for your approval.",
     );
-    super::onboarding::subscription_rows(
-        ui,
-        state
-            .provider_status
-            .as_ref()
-            .map(|p| p.subscriptions.as_slice()),
-        out,
-    );
+    super::onboarding::subscription_rows(ui, state, out);
     let s = &mut state.settings;
     sub(
         ui,

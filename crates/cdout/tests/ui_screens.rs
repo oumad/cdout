@@ -727,7 +727,11 @@ fn onboarding_appears_when_nothing_is_usable() {
     h.get_by_label("No Ollama at http://localhost:11434");
     h.get_by_label("Use a subscription you already have");
     h.get_by_label("installed, not signed in");
-    h.get_by_label("claude");
+    h.get_by_label("Sign in to Claude Code").click();
+    h.run();
+    assert!(take(&mut h)
+        .iter()
+        .any(|m| matches!(m, Msg::SignInCli(Backend::ClaudeCode))));
     h.get_by_label("not installed");
     h.get_by_label("Get Codex ⬈").click();
     h.run();

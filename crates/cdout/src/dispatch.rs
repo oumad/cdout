@@ -255,6 +255,11 @@ impl Dispatcher {
                     out.send(Msg::EffectFailed(format!("Could not open {url}: {e}")));
                 }
             }
+            Effect::OpenCliSignIn(backend) => {
+                if let Err(e) = api::open_cli_sign_in(backend) {
+                    out.send(Msg::EffectFailed(e));
+                }
+            }
             Effect::OpenFileAccessSettings => {
                 if let Err(e) = api::open_file_access_settings() {
                     out.send(Msg::EffectFailed(e));

@@ -155,6 +155,11 @@ pub async fn available_models() -> Result<Vec<String>, String> {
     Ok(models)
 }
 
+/// Open a terminal window on the CLI's own sign-in flow.
+pub fn open_cli_sign_in(backend: cli::Backend) -> Result<(), String> {
+    cli::open_sign_in(backend)
+}
+
 /// Snapshot of which providers are usable right now — drives the first-run
 /// onboarding. Unlike [`available_models`] (which swallows the Ollama
 /// connection error, so the UI can't tell "not installed" from "installed,

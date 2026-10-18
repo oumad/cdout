@@ -40,7 +40,7 @@ pub fn provider_setup(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
                 .color(GRAY_400),
         );
         ui.add_space(6.0);
-        subscription_rows(ui, status.as_ref().map(|s| s.subscriptions.as_slice()), out);
+        subscription_rows(ui, state, out);
         ui.add_space(4.0);
         if ui.add(widgets::secondary_button("⟳ Re-check")).clicked() {
             out.push(Msg::OnboardingRecheck);
@@ -159,10 +159,16 @@ pub fn provider_setup(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
     });
 }
 
-/// One line per agent CLI: signed in, installed but signed out (with the
-/// command that signs in), or not installed (with an install link). `None`
-/// until the first check answers; no spinner, since a failed check never does.
-pub fn subscription_rows(ui: &mut Ui, statuses: Option<&[CliStatus]>, out: &mut Vec<Msg>) {
+/// One line per agent CLI: signed in, installed but signed out (with a Sign
+/// in button that opens the CLI's own login), or not installed (with an
+/// install link). Before the first check answers, a plain note; no spinner,
+/// since a failed check never answers.
+pub fn subscription_rows(ui: &mut Ui, state: &AppState, out: &mut Vec<Msg>) {
+    let statuses: Option<&[CliStatus]> = state
+        .provider_status
+        .as_ref()
+        .map(|p| p.subscriptions.as_slice());
+    let signing_in = state.sign_in.map(|(b, _)| b);
     let Some(statuses) = statuses else {
         ui.label(
             RichText::new("Looking for Claude Code and Codex…")
@@ -184,18 +190,32 @@ pub fn subscription_rows(ui: &mut Ui, statuses: Option<&[CliStatus]>, out: &mut 
             ui.painter().circle_filled(dot.center(), 3.5, color);
             ui.label(RichText::new(st.name).size(12.0).strong().color(GRAY_200));
             ui.label(RichText::new(state).size(11.0).color(color));
-            if st.installed && !st.signed_in {
-                ui.label(RichText::new("Run").size(11.0).color(GRAY_400));
+            if st.installed && !st.signed_in && signing_in == Some(st.backend) {
+                ui.label(
+                    RichText::new(
+                        "Finish signing in in the window that opened; cdout notices on its own.",
+                    )
+                    .size(11.0)
+                    .color(GRAY_400),
+                );
+            } else if st.installed && !st.signed_in {
+                let r = ui.add(widgets::primary_button("Sign in"));
+                r.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        true,
+                        format!("Sign in to {}", st.name),
+                    )
+                });
+                if r.clicked() {
+                    out.push(Msg::SignInCli(st.backend));
+                }
+                ui.label(RichText::new("or run").size(11.0).color(GRAY_500));
                 ui.label(
                     RichText::new(st.sign_in_command)
                         .monospace()
                         .size(11.0)
                         .color(GRAY_300),
-                );
-                ui.label(
-                    RichText::new("in a terminal and sign in.")
-                        .size(11.0)
-                        .color(GRAY_400),
                 );
             } else if !st.installed
                 && widgets::link_label(
