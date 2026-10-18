@@ -1340,6 +1340,15 @@ fn replacement_prefers_cloud_families() {
         Some("ollama:a".into())
     );
     assert_eq!(pick_replacement(&v(&["zzz"])), Some("zzz".into()));
+    // The user's own subscriptions win over everything else.
+    assert_eq!(
+        pick_replacement(&v(&["anthropic/y", "codex:default", "claude-code:sonnet"])),
+        Some("claude-code:sonnet".into())
+    );
+    assert_eq!(
+        pick_replacement(&v(&["ollama:a", "anthropic/y", "codex:default"])),
+        Some("codex:default".into())
+    );
     assert_eq!(pick_replacement(&[]), None);
 }
 
@@ -1646,4 +1655,82 @@ fn startup_shows_main_and_loads_everything() {
         assert!(fx.contains(&e), "missing {e:?} in {fx:?}");
     }
     assert!(s.main.visible);
+}
+
+// --- signing in to an agent CLI ---
+
+fn cli_status(backend: Backend, signed_in: bool) -> cdout_core::llm::clients::cli::CliStatus {
+    cdout_core::llm::clients::cli::CliStatus {
+        backend,
+        name: backend.name(),
+        installed: true,
+        signed_in,
+        detail: String::new(),
+        sign_in_command: backend.sign_in_command(),
+        install_url: backend.install_url(),
+    }
+}
+
+fn status_with(subscriptions: Vec<cdout_core::llm::clients::cli::CliStatus>) -> ProviderStatus {
+    ProviderStatus {
+        subscriptions,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn sign_in_opens_the_cli_login_and_watches_for_it() {
+    let mut s = state();
+    let now = t0();
+    let fx = s.update(Msg::SignInCli(Backend::ClaudeCode), now);
+    assert!(fx.contains(&Effect::OpenCliSignIn(Backend::ClaudeCode)));
+    assert!(s.sign_in.is_some());
+    // Models are available, yet the poll keeps checking while it watches.
+    let poll = s.models.next_poll.expect("a poll is scheduled");
+    let fx = s.update(Msg::Tick, poll);
+    assert!(fx.contains(&Effect::FetchProviderStatus));
+
+    // Still signed out: keep watching, change nothing.
+    let fx = s.update(
+        Msg::ProviderStatusLoaded(Ok(status_with(vec![cli_status(
+            Backend::ClaudeCode,
+            false,
+        )]))),
+        poll,
+    );
+    assert!(s.sign_in.is_some());
+    assert!(fx.is_empty());
+    assert_eq!(s.models.selected, "ollama:test");
+
+    // Signed in: switch to it, refresh the models, say so, stop watching.
+    s.models.inflight = false;
+    let fx = s.update(
+        Msg::ProviderStatusLoaded(Ok(status_with(vec![cli_status(Backend::ClaudeCode, true)]))),
+        poll,
+    );
+    assert!(s.sign_in.is_none());
+    assert_eq!(s.models.selected, "claude-code:sonnet");
+    assert!(fx.contains(&Effect::PersistModel("claude-code:sonnet".into())));
+    assert!(fx.contains(&Effect::FetchModels));
+    assert!(s
+        .toast
+        .as_ref()
+        .is_some_and(|t| t.message.contains("Signed in to Claude Code")));
+}
+
+#[test]
+fn sign_in_watch_gives_up_after_a_while() {
+    let mut s = state();
+    let now = t0();
+    s.update(Msg::SignInCli(Backend::Codex), now);
+    let late = now + SIGN_IN_WATCH + Duration::from_secs(1);
+    s.models.next_poll = Some(late);
+    s.update(Msg::Tick, late);
+    assert!(s.sign_in.is_none());
+    // Another CLI signing in later does not hijack the selected model.
+    s.update(
+        Msg::ProviderStatusLoaded(Ok(status_with(vec![cli_status(Backend::Codex, true)]))),
+        late,
+    );
+    assert_eq!(s.models.selected, "ollama:test");
 }

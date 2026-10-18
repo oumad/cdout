@@ -1,5 +1,7 @@
-//! Three-branch model dispatch.
+//! Model dispatch by slug prefix.
 //!
+//! - `claude-code:*`, `codex:*` -> the user's own signed-in agent CLI
+//!   (`clients::cli`), so an existing subscription needs no API key
 //! - `ollama:*` -> local Ollama (non-negotiable for local privacy)
 //! - `anthropic:*` -> direct Anthropic API for prompt-caching path (optional;
 //!   requires an API key in Settings)
@@ -8,19 +10,22 @@
 //! The retry wrapper + history-recovery layer is provider-agnostic and lives
 //! in `llm::retry` + `llm::history`. This file is just the dispatch table.
 
-use crate::llm::clients::{anthropic, ollama, openrouter};
+use crate::llm::clients::{anthropic, cli, ollama, openrouter};
 use crate::llm::{Message, ToolDefinition};
 use crate::utils::config;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Provider {
+    Cli(cli::Backend, String),
     Ollama(String),
     AnthropicDirect(String),
     OpenRouter(String),
 }
 
 fn route_provider(model: &str) -> Provider {
-    if let Some(rest) = model.strip_prefix("ollama:") {
+    if let Some((backend, rest)) = cli::route(model) {
+        Provider::Cli(backend, rest.to_string())
+    } else if let Some(rest) = model.strip_prefix("ollama:") {
         Provider::Ollama(rest.to_string())
     } else if let Some(rest) = model.strip_prefix("anthropic:") {
         // Allow either "anthropic:claude-opus-4-7" (bare) or
@@ -82,6 +87,9 @@ pub async fn route_chat_stream(
     // the trim ladder in `agent::call_stream_with_context_recovery`. The
     // per-chunk idle timeout in stream_util handles stalled streams.
     match route_provider(model) {
+        Provider::Cli(backend, name) => {
+            cli::chat_stream(backend, &name, history, tools, on_chunk).await
+        }
         Provider::Ollama(name) => {
             let url = ollama_url();
             ollama::chat_stream(&url, &name, history, tools, on_chunk).await
@@ -100,6 +108,18 @@ pub async fn route_chat_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_cli_prefixes() {
+        assert_eq!(
+            route_provider("claude-code:sonnet"),
+            Provider::Cli(cli::Backend::ClaudeCode, "sonnet".to_string())
+        );
+        assert_eq!(
+            route_provider("codex:default"),
+            Provider::Cli(cli::Backend::Codex, "default".to_string())
+        );
+    }
 
     #[test]
     fn routes_ollama_prefix() {

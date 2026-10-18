@@ -1,6 +1,7 @@
-//! First-run provider setup (`ProviderSetup.tsx`) and the one-shot
-//! OpenRouter migration banner (`MigrationBanner.tsx`).
+//! First-run provider setup and the one-shot banner about credential files
+//! left by older versions.
 
+use cdout_core::llm::clients::cli::CliStatus;
 use eframe::egui::{self, Color32, Key, Margin, RichText, Stroke, TextEdit, Ui};
 
 use super::theme::*;
@@ -21,15 +22,33 @@ pub fn provider_setup(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
         icons::icon(ui, 32.0, |p, r| icons::paint_bot(p, r, INDIGO_500));
         ui.label(RichText::new("Set up a model to get started").size(18.0).strong().color(GRAY_100));
         ui.label(
-            RichText::new("cdout needs a model to think. Pick either one — both work, and you can switch anytime from the picker.")
+            RichText::new("cdout needs a model to think. Any of these works, and you can switch anytime from the picker.")
                 .size(12.0)
                 .color(GRAY_500),
         );
         ui.add_space(14.0);
     });
 
-    let s = &mut state.settings;
     let status = state.provider_status.clone();
+    widgets::card(GRAY_900, GRAY_800).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new("Use a subscription you already have").strong().color(GRAY_100));
+        ui.label(RichText::new("NO API KEY").size(10.0).strong().color(EMERALD_500));
+        ui.label(
+            RichText::new("Signed in to Claude Code or Codex on this machine? cdout runs it for you and your plan covers the usage. Commands still wait for your approval.")
+                .size(11.0)
+                .color(GRAY_400),
+        );
+        ui.add_space(6.0);
+        subscription_rows(ui, state, out);
+        ui.add_space(4.0);
+        if ui.add(widgets::secondary_button("⟳ Re-check")).clicked() {
+            out.push(Msg::OnboardingRecheck);
+        }
+    });
+    ui.add_space(10.0);
+
+    let s = &mut state.settings;
     ui.columns(2, |cols| {
         // Local
         widgets::card(GRAY_900, GRAY_800).show(&mut cols[0], |ui| {
@@ -95,10 +114,10 @@ pub fn provider_setup(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
         // Cloud
         widgets::card(GRAY_900, GRAY_800).show(&mut cols[1], |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new("Cloud").strong().color(GRAY_100));
-            ui.label(RichText::new("~400 MODELS").size(10.0).strong().color(INDIGO_300));
+            ui.label(RichText::new("API key").strong().color(GRAY_100));
+            ui.label(RichText::new("PAY PER USE").size(10.0).strong().color(INDIGO_300));
             ui.label(
-                RichText::new("One OpenRouter key unlocks Claude, GPT, Gemini, and more. Paste it to start right away.")
+                RichText::new("An OpenRouter key reaches Claude, GPT, Gemini and more, billed per request. Paste it to start right away.")
                     .size(11.0)
                     .color(GRAY_400),
             );
@@ -140,7 +159,80 @@ pub fn provider_setup(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
     });
 }
 
-pub fn migration_banner(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
+/// One line per agent CLI: signed in, installed but signed out (with a Sign
+/// in button that opens the CLI's own login), or not installed (with an
+/// install link). Before the first check answers, a plain note; no spinner,
+/// since a failed check never answers.
+pub fn subscription_rows(ui: &mut Ui, state: &AppState, out: &mut Vec<Msg>) {
+    let statuses: Option<&[CliStatus]> = state
+        .provider_status
+        .as_ref()
+        .map(|p| p.subscriptions.as_slice());
+    let signing_in = state.sign_in.map(|(b, _)| b);
+    let Some(statuses) = statuses else {
+        ui.label(
+            RichText::new("Looking for Claude Code and Codex…")
+                .size(11.0)
+                .color(GRAY_500),
+        );
+        return;
+    };
+    for st in statuses {
+        ui.horizontal_wrapped(|ui| {
+            let (color, state) = if st.signed_in {
+                (EMERALD_500, format!("signed in · {}", st.detail))
+            } else if st.installed {
+                (AMBER_400, "installed, not signed in".to_string())
+            } else {
+                (GRAY_600, "not installed".to_string())
+            };
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter().circle_filled(dot.center(), 3.5, color);
+            ui.label(RichText::new(st.name).size(12.0).strong().color(GRAY_200));
+            ui.label(RichText::new(state).size(11.0).color(color));
+            if st.installed && !st.signed_in && signing_in == Some(st.backend) {
+                ui.label(
+                    RichText::new(
+                        "Finish signing in in the window that opened; cdout notices on its own.",
+                    )
+                    .size(11.0)
+                    .color(GRAY_400),
+                );
+            } else if st.installed && !st.signed_in {
+                let r = ui.add(widgets::primary_button("Sign in"));
+                r.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        true,
+                        format!("Sign in to {}", st.name),
+                    )
+                });
+                if r.clicked() {
+                    out.push(Msg::SignInCli(st.backend));
+                }
+                ui.label(RichText::new("or run").size(11.0).color(GRAY_500));
+                ui.label(
+                    RichText::new(st.sign_in_command)
+                        .monospace()
+                        .size(11.0)
+                        .color(GRAY_300),
+                );
+            } else if !st.installed
+                && widgets::link_label(
+                    ui,
+                    RichText::new(format!("Get {} ⬈", st.name))
+                        .size(11.0)
+                        .color(INDIGO_300),
+                )
+                .clicked()
+            {
+                out.push(Msg::OpenUrl(st.install_url.to_string()));
+            }
+        });
+    }
+}
+
+pub fn migration_banner(ui: &mut Ui, out: &mut Vec<Msg>) {
     egui::Frame::new()
         .fill(AMBER_950)
         .stroke(Stroke::new(1.0, AMBER_500.gamma_multiply(0.4)))
@@ -150,43 +242,20 @@ pub fn migration_banner(ui: &mut Ui, state: &mut AppState, out: &mut Vec<Msg>) {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_max_width(ui.available_width() - 30.0);
-                    ui.label(RichText::new("Cloud providers changed").strong().color(AMBER_300));
+                    ui.label(RichText::new("Old credentials found").strong().color(AMBER_300));
                     ui.label(
-                        RichText::new("cdout now routes cloud LLM calls through OpenRouter instead of CLI-credential reuse. The Claude Code OAuth path, Codex CLI integration, Gemini CLI detection, and Antigravity provider have all been removed. Get an OpenRouter API key (one key, ~400 models including Claude Opus 4.7, GPT-5, Gemini 3) and paste it into Settings › Cloud. Your Ollama models still work as-is.")
+                        RichText::new("An earlier version of cdout left API keys or a login file on disk that it no longer uses. Your providers are set up in Settings › Providers.")
                             .size(11.0)
                             .color(Color32::from_rgb(0xfd, 0xe6, 0x8a)),
-                    );
-                    ui.label(
-                        RichText::new("Your old credential files were left on disk untouched. You can clean them up below or leave them — cdout no longer reads them either way.")
-                            .size(11.0)
-                            .color(AMBER_400.gamma_multiply(0.8)),
                     );
                     ui.horizontal(|ui| {
                         if ui.add(widgets::warn_button("Open Settings")).clicked() {
                             out.push(Msg::OpenSettingsFromBanner);
                         }
-                        if ui.add(widgets::secondary_button("Get an OpenRouter key ⬈")).clicked() {
-                            out.push(Msg::OpenUrl("https://openrouter.ai/keys".into()));
-                        }
-                        if ui.add(widgets::secondary_button("🗑 Clean up legacy creds")).clicked() {
-                            state.main.cleanup_confirm = !state.main.cleanup_confirm;
+                        if ui.add(widgets::secondary_button("🗑 Remove the old file")).clicked() {
+                            out.push(Msg::CleanupLegacy);
                         }
                     });
-                    if state.main.cleanup_confirm {
-                        ui.label(
-                            RichText::new("Also delete ~/.claude/.credentials.json and ~/.codex/auth.json? These files belong to other tools (Claude Code, Codex CLI). Only remove them if you no longer use those CLIs.")
-                                .size(11.0)
-                                .color(GRAY_300),
-                        );
-                        ui.horizontal(|ui| {
-                            if ui.add(widgets::danger_button("Delete cdout's and the CLIs' files")).clicked() {
-                                out.push(Msg::CleanupLegacy { third_party: true });
-                            }
-                            if ui.add(widgets::secondary_button("Only cdout's own file")).clicked() {
-                                out.push(Msg::CleanupLegacy { third_party: false });
-                            }
-                        });
-                    }
                 });
                 if widgets::icon_button(ui, "🗙", "Dismiss banner").clicked() {
                     out.push(Msg::DismissBanner);

@@ -78,19 +78,25 @@ under [Testing](#testing).
 
 ### Configure providers
 
-After first launch:
+Any one of these is enough; cdout picks up whatever is available at launch.
 
-1. **OpenRouter (recommended)** — one key for ~400 models (Claude Opus 4.7,
-   GPT-5, Gemini 3, Llama 4, etc.). Get a key at
-   [openrouter.ai/keys](https://openrouter.ai/keys), paste it into Settings →
-   Providers → "OpenRouter API Key". Save.
-2. **Ollama (optional, local)** — if `ollama serve` is running on
-   `localhost:11434`, your local models appear under "Local (Ollama)" in the
-   picker. Change the URL in Settings if Ollama lives elsewhere.
-3. **Anthropic direct (optional, for prompt caching)** — OpenRouter's
-   OpenAI-compatible wire drops `cache_control` markers; if you want the 5–10×
-   cost reduction from Anthropic's caching, paste an Anthropic API key in
-   Settings as well. Models prefixed `anthropic:` then route directly.
+1. **A subscription you already have** — if [Claude Code](https://code.claude.com/docs/en/setup)
+   or [Codex](https://github.com/openai/codex) is installed and signed in on
+   the machine, there is nothing to configure: its models appear under "Your
+   subscriptions" and cdout selects one. cdout runs the official CLI in
+   headless mode with its own tools switched off, so your plan covers the
+   usage and every command still waits for your approval. Installed but not
+   signed in? Click **Sign in** next to it (first-run screen or Settings →
+   Providers): cdout opens the CLI's own login in a terminal window, notices
+   when it finishes and switches to it. Signing in beforehand with `claude`
+   or `codex login` works just as well.
+2. **Ollama (local)** — if `ollama serve` is running on `localhost:11434`,
+   your local models appear under "Local (Ollama)". Change the URL in
+   Settings if Ollama lives elsewhere.
+3. **An API key** — an [OpenRouter](https://openrouter.ai/keys) key reaches
+   Claude, GPT, Gemini and more, billed per request; an Anthropic API key
+   adds direct `anthropic:` models with prompt caching (OpenRouter's
+   OpenAI-compatible wire drops `cache_control`). Settings → Providers.
 
 ---
 
@@ -145,13 +151,14 @@ Two crates in one Cargo workspace:
 |------|---------|
 | `api.rs` | The entry points the app calls: models and provider status, keys (masked on the way out), skills, session creation, `run_agent_step`, `execute_shell_command` |
 | `constants.rs` | Backend tunables (`MAX_OUTPUT_LEN`, `TOOL_NAME`, `COMPLETION_KEYWORDS`) |
-| `llm/router.rs` | Three-branch dispatch: `ollama:*` → ollama, `anthropic:*` → direct Anthropic, else → OpenRouter |
+| `llm/router.rs` | Dispatch by prefix: `claude-code:*` / `codex:*` → the user's CLI, `ollama:*` → ollama, `anthropic:*` → direct Anthropic, else → OpenRouter |
 | `llm/retry.rs` | Error classifier (`BusinessQuota` / `ContextWindowExceeded` / `EmptyCompletion` / `TransientRetryable` / `Terminal`) + retry wrapper with exp backoff + jitter |
 | `llm/history.rs` | Context-overflow recovery: trim ladder (`fast_trim_tool_results` → `emergency_history_trim`) + orphan reconciliation |
 | `llm/stream_util.rs` | Per-chunk 60s idle timeout + global cancel-flag check |
 | `llm/mod.rs` | `Message`, `ToolCall`, `ToolDefinition`, `StreamChunk` types |
 | `llm/clients/ollama.rs` | Local Ollama client (streaming, NDJSON) |
 | `llm/clients/anthropic.rs` | Direct Anthropic API-key client (prompt caching + `compact-2026-01-12` beta for 4.6+ models) |
+| `llm/clients/cli.rs` | Claude Code and Codex as providers: detection (`claude auth status`, `codex login status`), a Sign in action that opens the CLI's own login in a terminal, one headless run per step with the CLI's tools off, and a text tool protocol (a fenced `tool` block parsed back into native `tool_calls`, hidden from the stream) |
 | `llm/clients/openrouter.rs` | OpenAI-compatible OpenRouter client. Pins `allow_fallbacks: false`, `quantizations: ["fp8","bf16","fp16"]`, `data_collection: "deny"` on every request |
 | `llm/fake.rs` | Scripted model behind the `fake-llm` feature; what the end-to-end smoke test talks to |
 | `features/agent.rs` | Agent loop, tool-proposal extraction (native `tool_calls` first, code-block + raw-text fallbacks), context-overflow recovery, the `ChunkSink` streaming trait |
@@ -321,6 +328,8 @@ Bundled skills currently: `ffmpeg`, `oiiotool`, `imagemagick`, `exiftool`.
 ```
 model id pattern              dispatch                        rationale
 ─────────────────             ────────                        ─────────
+claude-code:sonnet            `claude -p` (Claude Code)       the user's own plan, no key
+codex:default                 `codex exec` (Codex)            the user's own plan, no key
 ollama:llama3                 ollama (localhost)              local, private, free
 anthropic:claude-opus-4-7     direct Anthropic API            prompt caching works
 anthropic/claude-opus-4.7     OpenRouter                      same model, no caching
@@ -385,6 +394,12 @@ at next launch.
 
 ## Privacy notes
 
+- **Subscription path (Claude Code, Codex)** — cdout runs the official CLI
+  and the CLI talks to Anthropic or OpenAI under your account, as it would
+  in a terminal. cdout never reads, stores or forwards the CLI's
+  credentials. Each step runs in an empty working directory with the CLI's
+  own tools off (Claude Code) or in a read-only sandbox (Codex), and no
+  session is saved on the CLI's side.
 - **Ollama path** — fully local. Prompts never leave the machine.
 - **Anthropic direct path** — prompts go straight to `api.anthropic.com` with
   your key. No cdout intermediary.
@@ -411,6 +426,7 @@ in a form a script (or an agent) can read; that is how the app is developed.
   - `prompts.rs` — file-list block in all three size regimes, identity/rules section shortening on `sends_native_tool_specs`, the verify-before-complete rule, and a guard that the prompt never names the other platform's shell
   - `sessions.rs` — title generation (Unicode, truncation, empty), path-traversal rejection, create/load roundtrip, ordering by `last_active_at` desc, atomic write (tmp + rename), skip-corrupt-files, delete idempotency
   - `router.rs` — every prefix permutation including `anthropic:anthropic/...` and bare `anthropic/...`
+  - `clients/cli.rs` — sign-in status parsing for both CLIs, their stream formats (recorded from real runs), tool-block parsing and its leniencies, the stream filter that hides tool JSON at every possible split point, transcript rendering round-trips
   - `skills.rs` — every safety rule, case-insensitive matches, the curl-without-pipe-is-safe regression, wget-pipe-to-bash detection
   - `config.rs` — legacy `openai`/`gemini` field drop, default seed, data-dir
     migration (fast-path move, merge-without-clobber, stranded-state healing,
@@ -451,6 +467,13 @@ in a form a script (or an agent) can read; that is how the app is developed.
   Automation and asserts the resolver sees the right folder and selection,
   including the stale-title case. `cargo run -p cdout-core --example
   explorer_probe -- --json` dumps what the resolver sees right now.
+
+- **Subscription backends** — `cargo run -p cdout-core --example cli_probe`
+  (any OS): reports what detection sees, then drives each signed-in CLI
+  through the real agent loop: a request that needs a command, a follow-up
+  after a successful result, and an ambiguous request that must come back as
+  a question. Fails if raw tool JSON reaches the streamed text. Uses a little
+  of your plan's quota; pass a model (`claude-code:haiku`) to probe just one.
 
 CI runs `cargo test --workspace`, clippy (with and without `fake-llm`) and
 `cargo fmt --check` on Windows and macOS for every push and PR.
@@ -534,6 +557,13 @@ is the graphics driver losing the device when another process fills the GPU's
 memory; cdout uses DirectX 12 there, which survives that, and
 `WGPU_BACKEND=vulkan|dx12|metal|gl` overrides the choice if you need to.
 
+**Claude Code or Codex does not show up in the picker.** Settings →
+Providers → Subscriptions says what cdout found: not installed (with a link
+to get it), installed but not signed in (with a **Sign in** button), or
+signed in.
+cdout looks on PATH and in the usual install folders; a CLI installed
+somewhere else needs its folder on PATH.
+
 **The hotkey does nothing.** Another app has claimed the chord — the OS gives
 no feedback when it refuses a registration. Settings → **General** shows the
 current hotkey and records a new one: press the keys you want, and if the OS
@@ -562,6 +592,13 @@ result now says so explicitly.
 - **Spotlight always starts a fresh session.** If you want to continue an
   existing conversation, switch to the main window and pick the session in
   the sidebar first.
+- **Subscription steps are slower than an API.** Each step starts the CLI
+  afresh (a few seconds for Claude Code). Codex follows your Codex config's
+  model and reasoning effort; a high effort can take half a minute per step.
+- **No Gemini or Grok subscription path.** Gemini CLI's Google sign-in no
+  longer works for individuals (Google sends them to Antigravity), which
+  leaves it API-key only, and Gemini models are already reachable through an
+  OpenRouter key. There is no Grok CLI with subscription sign-in to drive.
 - **OpenRouter outage recovery is manual.** No auto-failover to direct
   Anthropic — we surface a clear "service issue, not your key" error
   instead.

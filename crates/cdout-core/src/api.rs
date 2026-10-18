@@ -15,7 +15,7 @@ use crate::features::loop_detector;
 use crate::features::prompts;
 use crate::features::sessions;
 use crate::features::skills::{self, LoadedSkills};
-use crate::llm::clients::ollama;
+use crate::llm::clients::{cli, ollama};
 use crate::llm::Message;
 use crate::platform;
 use crate::tools;
@@ -146,7 +146,18 @@ pub async fn available_models() -> Result<Vec<String>, String> {
         models.extend(ANTHROPIC_DIRECT_MODELS.iter().map(|m| m.to_string()));
     }
 
+    for status in cli::statuses().await {
+        if status.signed_in {
+            models.extend(status.backend.models().iter().map(|m| m.to_string()));
+        }
+    }
+
     Ok(models)
+}
+
+/// Open a terminal window on the CLI's own sign-in flow.
+pub fn open_cli_sign_in(backend: cli::Backend) -> Result<(), String> {
+    cli::open_sign_in(backend)
 }
 
 /// Snapshot of which providers are usable right now — drives the first-run
@@ -160,8 +171,10 @@ pub struct ProviderStatus {
     pub ollama_model_count: usize,
     pub openrouter_set: bool,
     pub anthropic_set: bool,
-    /// True when at least one model can actually be selected: a cloud key is
-    /// set, or Ollama has ≥1 pulled model.
+    /// Every known agent CLI (Claude Code, Codex): installed, signed in.
+    pub subscriptions: Vec<cli::CliStatus>,
+    /// True when at least one model can actually be selected: a CLI is
+    /// signed in, a cloud key is set, or Ollama has ≥1 pulled model.
     pub any_usable: bool,
 }
 
@@ -173,6 +186,7 @@ pub async fn provider_status() -> Result<ProviderStatus, String> {
             ollama_model_count: 1,
             openrouter_set: false,
             anthropic_set: false,
+            subscriptions: Vec::new(),
             any_usable: true,
         });
     }
@@ -186,13 +200,19 @@ pub async fn provider_status() -> Result<ProviderStatus, String> {
     let keys = config::load_api_keys();
     let openrouter_set = key_is_set(&keys.openrouter);
     let anthropic_set = key_is_set(&keys.anthropic);
+    let subscriptions = cli::statuses().await;
+    let any_usable = ollama_model_count > 0
+        || openrouter_set
+        || anthropic_set
+        || subscriptions.iter().any(|s| s.signed_in);
 
     Ok(ProviderStatus {
         ollama_reachable,
         ollama_model_count,
         openrouter_set,
         anthropic_set,
-        any_usable: ollama_model_count > 0 || openrouter_set || anthropic_set,
+        subscriptions,
+        any_usable,
     })
 }
 
@@ -275,18 +295,11 @@ pub fn masked_api_keys() -> MaskedApiKeys {
 /// don't sit on disk indefinitely. The serde deserializer already drops the
 /// unknown fields; we just persist the cleaned struct back.
 pub fn has_legacy_credentials() -> Result<bool, String> {
-    let home = dirs::home_dir();
     let cfg = dirs::config_dir();
     let mut found = false;
 
-    if let Some(h) = home.as_ref() {
-        if h.join(".claude").join(".credentials.json").exists() {
-            found = true;
-        }
-        if h.join(".codex").join("auth.json").exists() {
-            found = true;
-        }
-    }
+    // Claude Code's and Codex's own credential files are not legacy: those
+    // CLIs are supported providers, and their files are theirs to manage.
     if let Some(c) = cfg.as_ref() {
         // Probe both the current data dir and the pre-rename one: the
         // shuttle-io → cdout migration merges old → new on every launch,
@@ -327,12 +340,9 @@ pub fn has_legacy_credentials() -> Result<bool, String> {
     Ok(found)
 }
 
-/// Clean up the legacy on-disk artefacts a user may still have around after
-/// the OpenRouter migration. Always removes cdout's own
-/// `antigravity_credentials.json`. Removes the third-party CLI creds
-/// (~/.claude, ~/.codex) ONLY when `remove_third_party` is true — those
-/// belong to other tools, so we ask the user first.
-pub fn cleanup_legacy_credentials(remove_third_party: bool) -> Result<(), String> {
+/// Remove cdout's own legacy credential file (`antigravity_credentials.json`).
+/// Other tools' files are never touched.
+pub fn cleanup_legacy_credentials() -> Result<(), String> {
     let mut errors: Vec<String> = Vec::new();
 
     if let Some(c) = dirs::config_dir() {
@@ -345,21 +355,6 @@ pub fn cleanup_legacy_credentials(remove_third_party: bool) -> Result<(), String
             if path.exists() {
                 if let Err(e) = std::fs::remove_file(&path) {
                     errors.push(format!("{}: {}", path.display(), e));
-                }
-            }
-        }
-    }
-
-    if remove_third_party {
-        if let Some(h) = dirs::home_dir() {
-            for p in [
-                h.join(".claude").join(".credentials.json"),
-                h.join(".codex").join("auth.json"),
-            ] {
-                if p.exists() {
-                    if let Err(e) = std::fs::remove_file(&p) {
-                        errors.push(format!("{}: {}", p.display(), e));
-                    }
                 }
             }
         }

@@ -236,8 +236,9 @@ impl Dispatcher {
                     tracing::warn!(target: "cdout", "config.ack.error {e}");
                 }
             }),
-            Effect::CleanupLegacy { third_party } => self
-                .blocking(move || Msg::LegacyCleaned(api::cleanup_legacy_credentials(third_party))),
+            Effect::CleanupLegacy => {
+                self.blocking(|| Msg::LegacyCleaned(api::cleanup_legacy_credentials()))
+            }
             Effect::LoadSkills => self.blocking(|| {
                 Msg::SkillsLoaded(api::list_skills(skills::load_all_skills_embedded()))
             }),
@@ -252,6 +253,11 @@ impl Dispatcher {
             Effect::OpenUrl(url) => {
                 if let Err(e) = open::that_detached(&url) {
                     out.send(Msg::EffectFailed(format!("Could not open {url}: {e}")));
+                }
+            }
+            Effect::OpenCliSignIn(backend) => {
+                if let Err(e) = api::open_cli_sign_in(backend) {
+                    out.send(Msg::EffectFailed(e));
                 }
             }
             Effect::OpenFileAccessSettings => {
